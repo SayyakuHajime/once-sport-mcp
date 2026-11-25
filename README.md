@@ -57,7 +57,7 @@ The optional media workflow may process a permitted local video or one YouTube v
 
 - Native Once export fails closed for holds, speed segments, text, flags and the newer drawing kinds; use the custom renderer for them.
 - Tracking is seeded by the host, single-target per job. There is no re-identification, occlusion recovery or automatic player detection.
-- Not implemented: magnifier, player vision, chroma key, image import, field mapping and field tracking. See `docs/once-sport-feature-matrix.md`.
+- Not implemented: magnifier, player vision, chroma key, image import, field mapping and field tracking.
 - Opening native output in the Once GUI project list, XLSX in a desktop spreadsheet, and Windows/macOS are untested.
 - Rendering 1080p costs roughly 0.1-0.25 s per output frame; keep clips short.
 - Reviewer identity is an operator assertion, not authentication.
@@ -261,7 +261,7 @@ With tracking disabled, a workspace but no native configuration has 18 tools. Ex
 
 The CLI equivalent is `export-native PROJECT_ID ANALYSIS_ID --digest EXACT_APPROVED_DIGEST`, with the global native flag supplied before the subcommand. The native projection supports timed arrows and ellipses, including supplied ellipse position keyframes with fixed radii; it rejects unsupported fields before queueing. The nine-file export bundle preserves the report/proposal/review/CSV/metadata and includes the raw native MP4, H.264 compatibility MP4, native XML and exact drawing sidecar. Moving the bundle does not copy its referenced source video.
 
-See the [headless native workflow](docs/native-headless-workflow.md) for both process commands, supported subset, output roles, sandbox and verification limits, and the [generic native MCP client template](examples/mcp.native.example.json) for startup configuration. Native file/model save/reopen and genuine export are distinct from normal GUI project-list import, which remains unverified. Existing live projects are not rewritten by this workflow.
+See the headless native workflow for both process commands, supported subset, output roles, sandbox and verification limits, and the [generic native MCP client template](examples/mcp.native.example.json) for startup configuration. Native file/model save/reopen and genuine export are distinct from normal GUI project-list import, which remains unverified. Existing live projects are not rewritten by this workflow.
 
 <div align="right"><a href="#readme-top">↖ Back to top</a></div>
 
@@ -276,7 +276,7 @@ Install with `uv sync --frozen --extra tracking` and opt in through `ONCE_SPORT_
 
 The two verified artifacts are `tracking.json` and an unapproved diagnostic `tracking.preview.mp4`. Observed source-time keyframes and foot anchors remain **candidates**: include their completed job as proposal evidence and review the exact proposal digest before export. Detected loss/cuts/inconsistent motion produce an explicit reseed interval instead of frozen or extrapolated positions. Consistency scores do not establish identity; crossings, occlusion recovery and automatic re-identification are not guaranteed.
 
-Both custom and native export can consume the same reviewed keys. Native `PlayerCircle2` preserves Once's 30-frame entrance animation; the custom ellipse is the option for a ring visible immediately without that native introduction. The [tracking guide](docs/tracking-workflow.md) explains seeding, source timing, failure/review handling, output roles and measured-footage verification. A [combined tracking/native MCP template](examples/mcp.tracking-native.example.json) is provided; it does not install or configure a client automatically.
+Both custom and native export can consume the same reviewed keys. Native `PlayerCircle2` preserves Once's 30-frame entrance animation; the custom ellipse is the option for a ring visible immediately without that native introduction. A [combined tracking/native MCP template](examples/mcp.tracking-native.example.json) is provided; it does not install or configure a client automatically.
 
 <div align="right"><a href="#readme-top">↖ Back to top</a></div>
 
@@ -317,7 +317,7 @@ The trackers are independent and do not re-identify players. The composer uses o
 - **Statistics:** after exact-digest approval, `request_analysis_statistics` (CLI `statistics PROJECT_ID ANALYSIS_ID --digest DIGEST`) writes `statistics.xlsx`, `statistics.html` (self-contained, no scripts) and `statistics.json`: counts and seconds by phase, team, action and period, goals, players, flags, playlists. It needs no video file.
 - **Playlist export:** `request_analysis_export(..., playlist="NAME")` or `export --playlist NAME` renders only events listing that playlist; an unknown name fails at queue time.
 - **New custom drawing kinds:** `polyline` (optional `arrow`), `curve` (3-point arrow), `area` (`opacity` 0.05-0.8, keyframes), `spotlight` (`style` halo or ground), `stopwatch`, and `speed` (a time segment: `speed` 0.25, 0.5, 2 or 4, no points). Slow motion repeats frames, fast forward drops frames; audio is silent inside the segment and a hold cannot start inside it. `build_formation_drawings` also accepts `area` and `spotlights`.
-- Native export keeps failing closed for these features; see `docs/once-sport-feature-matrix.md` for what is and is not covered.
+- Native export keeps failing closed for these features.
 
 <div align="right"><a href="#readme-top">↖ Back to top</a></div>
 
@@ -372,7 +372,7 @@ The emitted legacy CSV is UTF-8 and comma-delimited, with the exact ordered head
 
 No general parser for arbitrary native Once XML/XLSX/HTML projects is included. The optional native exporter emits a narrowly supported XML projection validated against the pinned Once 4.9.6 loader/renderer. This does not validate the legacy CSV mapping or expose arbitrary desktop project editing.
 
-The default `export` creates a custom FFmpeg reel with editable JSON sidecar data; that JSON does not make its drawings native or change an already burned-in MP4. The optional `export-native` instead retains a genuine Once-generated MP4 plus native XML and a compatibility transcode. Copy artifacts out before editing: modifying registered workspace artifacts invalidates their hashes. Submit a new proposal, review its new digest and export again for changes. Native file/model save/reopen and headless export have engineering-fixture evidence; normal GUI project-list import and full desktop editability remain separate unverified boundaries. No live Once database is edited. See [the acceptance boundary](docs/end-to-end-acceptance.md) for E01–E17 and the scoped native/tracking verdicts.
+The default `export` creates a custom FFmpeg reel with editable JSON sidecar data; that JSON does not make its drawings native or change an already burned-in MP4. The optional `export-native` instead retains a genuine Once-generated MP4 plus native XML and a compatibility transcode. Copy artifacts out before editing: modifying registered workspace artifacts invalidates their hashes. Submit a new proposal, review its new digest and export again for changes. Native file/model save/reopen and headless export have engineering-fixture evidence; normal GUI project-list import and full desktop editability remain separate unverified boundaries. No live Once database is edited.
 
 <div align="right"><a href="#readme-top">↖ Back to top</a></div>
 
@@ -402,10 +402,6 @@ To exercise the optional tracker tests, use `uv run --frozen --extra tracking py
 ## References
 <a id="section-references"></a>
 
-- [State-machine inventory and legacy compatibility limits](docs/state-machines.md)
 - [Synthetic legacy timeline example](examples/timeline.synthetic.json)
-- [End-to-end acceptance boundary](docs/end-to-end-acceptance.md)
-- [Headless native Once workflow](docs/native-headless-workflow.md)
-- [Seeded target tracking and review](docs/tracking-workflow.md)
 
 <div align="right"><a href="#readme-top">↖ Back to top</a></div>
