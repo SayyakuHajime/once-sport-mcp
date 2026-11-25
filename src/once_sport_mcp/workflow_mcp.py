@@ -154,6 +154,7 @@ def register_workflow_tools(mcp: FastMCP, workflow: Workflow) -> None:
             label: str | None = None,
             hold_at_seconds: StrictInt | StrictFloat | None = None,
             hold_seconds: StrictInt | StrictFloat | None = None,
+            tags: list[dict[str, str] | None] | None = None,
             id_prefix: str = "formation",
         ) -> dict[str, Any]:
             """Compose review-required tracking evidence into drawings.
@@ -175,6 +176,7 @@ def register_workflow_tools(mcp: FastMCP, workflow: Workflow) -> None:
                 label=label,
                 hold_at_seconds=hold_at_seconds,
                 hold_seconds=hold_seconds,
+                tags=tags,
                 id_prefix=id_prefix,
             )
 

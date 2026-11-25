@@ -344,3 +344,29 @@ def test_spotlights_replace_rings_and_require_rings_false():
     assert [mark["id"] for mark in spots] == ["formation-spot-0", "formation-spot-1"]
     assert not any(mark["kind"] == "ellipse" for mark in plan["drawings"])
     assert all(mark["keyframes"] for mark in spots)
+
+
+def test_tags_add_following_nametags_and_validate_shape():
+    results = [
+        tracking_result(moving_boxes(0.1, y=0.25)),
+        tracking_result(moving_boxes(0.7, y=0.25)),
+    ]
+    plan = build_formation(
+        results,
+        media=MEDIA,
+        event_id="tags",
+        tags=[{"position": "CB", "name": "Otamendi"}, None],
+    )
+    tags = [mark for mark in plan["drawings"] if mark["kind"] == "nametag"]
+    assert [mark["id"] for mark in tags] == ["formation-tag-0"]
+    assert tags[0]["position"] == "CB" and tags[0]["text"] == "Otamendi"
+    assert len(tags[0]["keyframes"]) == plan["interval"]["frame_count"]
+    assert len(tags[0]["points"]) == 1
+    for bad in (
+        [{"position": "CB"}],
+        [{"position": "CB"}, {"role": "x"}],
+        [{}, {"name": "x"}],
+        "CB",
+    ):
+        with pytest.raises(FormationError):
+            build_formation(results, media=MEDIA, event_id="bad", tags=bad)

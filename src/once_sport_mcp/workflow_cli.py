@@ -147,6 +147,13 @@ def _build_parser() -> argparse.ArgumentParser:
     formation.add_argument("--hold-at", type=float)
     formation.add_argument("--hold-seconds", type=float)
     formation.add_argument("--id-prefix", default="formation")
+    formation.add_argument(
+        "--tag",
+        action="append",
+        dest="tags",
+        metavar="POSITION[:NAME]",
+        help="nametag per tracked job, in --job order (repeat; '-' for none)",
+    )
 
     submit = commands.add_parser("submit-analysis")
     submit.add_argument("project_id")
@@ -192,6 +199,25 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_tags(values):
+    """Turn repeated `POSITION[:NAME]` options into formation tag dicts."""
+    if not values:
+        return None
+    tags = []
+    for value in values:
+        if value == "-":
+            tags.append(None)
+            continue
+        position, _, name = value.partition(":")
+        tag = {}
+        if position:
+            tag["position"] = position
+        if name:
+            tag["name"] = name
+        tags.append(tag)
+    return tags
+
+
 def _dispatch(args: argparse.Namespace, workflow: Workflow) -> Any:
     if args.command == "capabilities":
         return _capabilities(workflow)
@@ -227,6 +253,7 @@ def _dispatch(args: argparse.Namespace, workflow: Workflow) -> Any:
             label=args.label,
             hold_at_seconds=args.hold_at,
             hold_seconds=args.hold_seconds,
+            tags=_parse_tags(args.tags),
         )
     if args.command == "submit-analysis":
         proposal = _read_proposal(args.proposal)

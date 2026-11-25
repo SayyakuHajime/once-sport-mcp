@@ -305,6 +305,7 @@ def test_formation_mcp_stdio_tool_is_read_only_discovered_and_strict(tmp_path):
                 "label",
                 "hold_at_seconds",
                 "hold_seconds",
+                "tags",
                 "id_prefix",
             }
             capabilities = json.loads(
@@ -394,6 +395,10 @@ def test_cli_formation_parser_dispatch_and_subprocess_envelopes(tmp_path):
             "0.5",
             "--id-prefix",
             "shape",
+            "--tag",
+            "CB:Otamendi",
+            "--tag",
+            "-",
         ]
     )
     assert args.command == "formation"
@@ -420,6 +425,7 @@ def test_cli_formation_parser_dispatch_and_subprocess_envelopes(tmp_path):
                 "label": "shape",
                 "hold_at_seconds": 1.5,
                 "hold_seconds": 0.5,
+                "tags": [{"position": "CB", "name": "Otamendi"}, None],
             },
         )
     ]

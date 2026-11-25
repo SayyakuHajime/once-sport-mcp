@@ -77,7 +77,7 @@ def test_polyline_paints_open_path_and_optional_arrow(tmp_path):
     )
     image = paint(tmp_path, mark)
     assert image.getpixel((96, 81))[0] > 180
-    assert image.getpixel((224, 81))[0] > 180
+    assert max(image.getpixel((224, y))[0] for y in (80, 81, 82)) > 180
     assert image.getpixel((281, 38))[0] > 180
 
 

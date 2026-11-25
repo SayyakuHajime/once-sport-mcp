@@ -108,12 +108,30 @@ def build_formation(
     label=None,
     hold_at_seconds=None,
     hold_seconds=None,
+    tags=None,
 ):
     """Compose tracked targets into editable line, ring, and optional label drawings."""
     if not isinstance(results, list) or not 2 <= len(results) <= 11:
         raise FormationError(
             "A formation requires between two and eleven tracking results"
         )
+    if tags is not None:
+        if (
+            not isinstance(tags, list)
+            or len(tags) != len(results)
+            or not all(tag is None or isinstance(tag, dict) for tag in tags)
+        ):
+            raise FormationError(
+                "tags must be a list with one dict (or null) per tracked target"
+            )
+        for tag in tags:
+            if tag is not None and (
+                set(tag) - {"position", "name"}
+                or not (tag.get("position") or tag.get("name"))
+            ):
+                raise FormationError(
+                    "Each tag needs a position and/or name and no other keys"
+                )
     if not isinstance(area, bool) or not isinstance(spotlights, bool):
         raise FormationError("area and spotlights must be booleans")
     if spotlights and rings is not False:
@@ -375,6 +393,31 @@ def build_formation(
                     "keyframes": keyframes,
                 }
             )
+
+    for index, tag in enumerate(tags or []):
+        if tag is None:
+            continue
+        keyframes = [
+            {
+                "time_seconds": time,
+                "points": [sample_maps[index][frame]["anchor"]],
+            }
+            for frame, time in zip(frame_indices, times, strict=True)
+        ]
+        mark = {
+            "id": f"{id_prefix}-tag-{index}",
+            "event_id": event_id,
+            "kind": "nametag",
+            "start_seconds": start,
+            "end_seconds": end,
+            "points": keyframes[0]["points"],
+            "keyframes": keyframes,
+        }
+        if tag.get("position"):
+            mark["position"] = tag["position"]
+        if tag.get("name"):
+            mark["text"] = tag["name"]
+        drawings.append(mark)
 
     if label is not None:
         label_from = start if hold_at_seconds is None else hold_at_seconds

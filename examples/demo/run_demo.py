@@ -39,6 +39,12 @@ built = formation.build_formation(
     label="Defensive line: time stop",
     hold_at_seconds=3.0,
     hold_seconds=2.0,
+    tags=[
+        {"position": "LB", "name": "2"},
+        {"position": "LCB", "name": "4"},
+        {"position": "RCB", "name": "5"},
+        {"position": "RB", "name": "3"},
+    ],
 )
 print(built["limited_by"], built["needs_reseed"], built["interval"])
 s = built["suggested_event"]
@@ -67,9 +73,20 @@ d = built["drawings"] + [
         "kind": "polyline",
         "start_seconds": 6.0,
         "end_seconds": 11.5,
-        "points": [[0.62, 0.34], [0.52, 0.38], [0.44, 0.36], [0.36, 0.42]],
+        "points": [[0.62, 0.34], [0.54, 0.4], [0.46, 0.34], [0.36, 0.42]],
         "arrow": True,
+        "smooth": True,
         "color": "#FFD166",
+    },
+    {
+        "id": "offball",
+        "event_id": "attack-run",
+        "kind": "arrow",
+        "start_seconds": 6.0,
+        "end_seconds": 11.5,
+        "points": [[0.66, 0.2], [0.5, 0.14]],
+        "dash": True,
+        "color": "#FF8FA3",
     },
     {
         "id": "switch",

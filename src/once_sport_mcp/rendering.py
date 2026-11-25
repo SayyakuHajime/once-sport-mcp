@@ -554,6 +554,109 @@ def _positions(mark, time):
     return keys[-1]["points"]
 
 
+POSITION_CODES = {
+    "GK": "gk",
+    "RB": "def", "LB": "def", "RWB": "def", "LWB": "def", "CB": "def",
+    "RCB": "def", "LCB": "def", "SW": "def",
+    "DM": "mid", "CDM": "mid", "CM": "mid", "RCM": "mid", "LCM": "mid",
+    "AM": "mid", "AMF": "mid", "CAM": "mid", "RM": "mid", "LM": "mid",
+    "RW": "fwd", "LW": "fwd", "SS": "fwd", "CF": "fwd", "ST": "fwd",
+}  # fmt: skip
+_POSITION_COLORS = {
+    "gk": "#F2C94C",
+    "def": "#4F9DFF",
+    "mid": "#3DDC97",
+    "fwd": "#FF6B6B",
+}
+
+
+def _spline(points, per_segment=16):
+    """Catmull-Rom spline through the points (endpoints are interpolated exactly)."""
+    if len(points) < 3:
+        return list(points)
+    padded = [points[0], *points, points[-1]]
+    out = []
+    for index in range(1, len(padded) - 2):
+        p0, p1, p2, p3 = padded[index - 1 : index + 3]
+        for step in range(per_segment):
+            t = step / per_segment
+            out.append(
+                tuple(
+                    0.5
+                    * (
+                        2 * p1[axis]
+                        + (-p0[axis] + p2[axis]) * t
+                        + (2 * p0[axis] - 5 * p1[axis] + 4 * p2[axis] - p3[axis]) * t**2
+                        + (-p0[axis] + 3 * p1[axis] - 3 * p2[axis] + p3[axis]) * t**3
+                    )
+                    for axis in (0, 1)
+                )
+            )
+    out.append(points[-1])
+    return out
+
+
+def _path_length(points):
+    return sum(math.dist(a, b) for a, b in itertools.pairwise(points))
+
+
+def _trim_end(points, distance):
+    """Cut `distance` off the end of a path; return (shorter path, tangent at the cut)."""
+    remaining = distance
+    path = list(points)
+    while len(path) > 2 and math.dist(path[-2], path[-1]) <= remaining:
+        remaining -= math.dist(path[-2], path[-1])
+        path.pop()
+    a, b = path[-2], path[-1]
+    seg = math.dist(a, b) or 1.0
+    keep = max(0.0, seg - remaining) / seg
+    path[-1] = (a[0] + (b[0] - a[0]) * keep, a[1] + (b[1] - a[1]) * keep)
+    return path
+
+
+def _dashes(points, dash, gap):
+    """Split a path into dash sub-paths by arc length."""
+    out, current, draw, left = [], [points[0]], True, dash
+    for a, b in itertools.pairwise(points):
+        seg = math.dist(a, b)
+        pos = 0.0
+        while seg - pos > 1e-9:
+            step = min(left, seg - pos)
+            pos += step
+            left -= step
+            point = (a[0] + (b[0] - a[0]) * pos / seg, a[1] + (b[1] - a[1]) * pos / seg)
+            if draw:
+                current.append(point)
+            if left <= 1e-9:
+                if draw and len(current) > 1:
+                    out.append(current)
+                draw = not draw
+                left = dash if draw else gap
+                current = [point] if draw else []
+    if draw and len(current) > 1:
+        out.append(current)
+    return out
+
+
+def _arrow_head(path, length, spread=0.42):
+    """Head polygon with a small notch; direction comes from the last `length` of path."""
+    tip = path[-1]
+    back = _trim_end(path, length * 0.9)[-1]
+    angle = math.atan2(tip[1] - back[1], tip[0] - back[0])
+    wings = [
+        (
+            tip[0] - length * math.cos(angle + sign * spread),
+            tip[1] - length * math.sin(angle + sign * spread),
+        )
+        for sign in (-1, 1)
+    ]
+    notch = (
+        tip[0] - 0.7 * length * math.cos(angle),
+        tip[1] - 0.7 * length * math.sin(angle),
+    )
+    return [tip, wings[0], notch, wings[1]], notch
+
+
 _OVERLAY_CACHE = [None, None]
 
 
@@ -750,31 +853,111 @@ def _paint(path, event, drawings, time):
                 box = (cx - rx, cy - ry, cx + rx, cy + ry)
                 pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
                 pen.ellipse(box, outline=color, width=round(stroke))
-            else:
-                line = pts + [pts[0]] if kind == "polygon" else pts
-                pen.line(
-                    line, fill=halo, width=round(stroke + 3 * scale), joint="curve"
+            elif kind == "nametag":
+                position = mark.get("position")
+                name = mark.get("text")
+                group = POSITION_CODES.get(position)
+                accent = mark.get("color") or _POSITION_COLORS.get(group, "#FFD166")
+                tag_size = max(12, round(height / 46)) * scale
+                bold = ImageFont.truetype("DejaVuSans-Bold.ttf", tag_size)
+                regular = ImageFont.truetype("DejaVuSans.ttf", tag_size)
+                ax, ay = pts[0]
+                pad = round(tag_size * 0.32)
+                parts = []
+                if position:
+                    parts.append((position, bold, "#101B23", accent))
+                if name:
+                    parts.append((name, regular, "#FFFFFF", "#101B23"))
+                widths = [
+                    pen.textlength(text, font=font) + 2 * pad
+                    for text, font, _, _ in parts
+                ]
+                tag_w, tag_h = sum(widths), tag_size + 2 * pad
+                lift = height * scale * 0.12
+                left = min(
+                    max(ax - tag_w / 2, 4 * scale), width * scale - tag_w - 4 * scale
                 )
-                pen.line(line, fill=color, width=round(stroke), joint="curve")
-                if kind in ("arrow", "curve") or (
+                top = ay - lift - tag_h
+                below = top < 4 * scale
+                if below:
+                    top = ay + lift * 0.3
+                top = min(top, height * scale - 40 * scale - tag_h)
+                stem_y = top + (0 if below else tag_h)
+                rgb = tuple(int(accent[index : index + 2], 16) for index in (1, 3, 5))
+                # Faint stem keeps the tag attached to the player without hiding them.
+                pen.line([(ax, ay), (ax, stem_y)], fill=(*rgb, 120), width=scale * 2)
+                point = tag_h * 0.28
+                tip_y = stem_y + (-point if below else point)
+                pen.polygon(
+                    [(ax - point, stem_y), (ax + point, stem_y), (ax, tip_y)],
+                    fill=halo,
+                )
+                dot = stroke * 1.1
+                pen.ellipse(
+                    (ax - dot, ay - dot, ax + dot, ay + dot),
+                    fill=accent,
+                    outline=halo,
+                    width=scale,
+                )
+                cursor = left
+                radius = tag_h / 2
+                pen.rounded_rectangle(
+                    (
+                        left - scale,
+                        top - scale,
+                        left + tag_w + scale,
+                        top + tag_h + scale,
+                    ),
+                    radius=radius + scale,
+                    fill=halo,
+                )
+                for (text, font, ink, fill), part_w in zip(parts, widths):
+                    pen.rounded_rectangle(
+                        (cursor, top, cursor + part_w, top + tag_h),
+                        radius=radius,
+                        fill=fill,
+                    )
+                    bounds = pen.textbbox((0, 0), text, font=font)
+                    pen.text(
+                        (
+                            cursor + pad - bounds[0],
+                            top + (tag_h - (bounds[3] - bounds[1])) / 2 - bounds[1],
+                        ),
+                        text,
+                        font=font,
+                        fill=ink,
+                    )
+                    cursor += part_w
+                continue
+            else:
+                if kind == "polygon":
+                    line = pts + [pts[0]]
+                elif kind == "polyline" and mark.get("smooth"):
+                    line = _spline(pts)
+                else:
+                    line = pts
+                has_head = kind in ("arrow", "curve") or (
                     kind == "polyline" and mark.get("arrow", False)
-                ):
-                    a, b = pts[-2], pts[-1]
-                    angle = math.atan2(b[1] - a[1], b[0] - a[0])
-                    length = max(9, height / 20) * scale
-                    head = [
-                        b,
-                        (
-                            b[0] - length * math.cos(angle - 0.45),
-                            b[1] - length * math.sin(angle - 0.45),
-                        ),
-                        (
-                            b[0] - length * math.cos(angle + 0.45),
-                            b[1] - length * math.sin(angle + 0.45),
-                        ),
-                    ]
+                )
+                head_len = max(9, height / 20) * scale
+                head = None
+                if has_head and len(line) >= 2 and _path_length(line) > head_len:
+                    head = _arrow_head(line, head_len)[0]
+                    line = _trim_end(line, head_len * 0.7)
+                shaft = (
+                    _dashes(line, 5 * stroke, 3.2 * stroke)
+                    if mark.get("dash")
+                    else [line]
+                )
+                for piece in shaft:
+                    pen.line(
+                        piece, fill=halo, width=round(stroke + 3 * scale), joint="curve"
+                    )
+                for piece in shaft:
+                    pen.line(piece, fill=color, width=round(stroke), joint="curve")
+                if head is not None:
+                    pen.polygon(head, fill=halo, outline=halo, width=scale * 2)
                     pen.polygon(head, fill=color)
-                    pen.line(head + [b], fill=halo, width=scale)
             if mark.get("text"):
                 label(mark["text"], pts[0], color=color)
         overlay = layer.resize(base.size, Image.Resampling.LANCZOS)
@@ -851,6 +1034,9 @@ def _validate(events, drawings, info, width, fps):
         "arrow",
         "opacity",
         "style",
+        "smooth",
+        "dash",
+        "position",
     }
     hold_owners = set()
     speed_owners = set()
@@ -872,6 +1058,7 @@ def _validate(events, drawings, info, width, fps):
             "curve": 3,
             "spotlight": 2,
             "stopwatch": 1,
+            "nametag": 1,
         }.get(kind)
         if (
             (expected and len(value) != expected)
@@ -914,6 +1101,7 @@ def _validate(events, drawings, info, width, fps):
             "area",
             "spotlight",
             "stopwatch",
+            "nametag",
             "speed",
         ):
             raise RenderError("Unknown drawing kind")
@@ -962,6 +1150,27 @@ def _validate(events, drawings, info, width, fps):
             kind != "polyline" or not isinstance(mark["arrow"], bool)
         ):
             raise RenderError("arrow must be a boolean used only with polyline")
+        for flag, kinds in (
+            ("smooth", ("polyline",)),
+            ("dash", ("line", "arrow", "polyline", "curve")),
+        ):
+            if flag in mark and (kind not in kinds or not isinstance(mark[flag], bool)):
+                raise RenderError(f"{flag} must be a boolean used only with {kinds}")
+        if kind == "nametag":
+            position, name = mark.get("position"), mark.get("text")
+            if position is not None and position not in POSITION_CODES:
+                raise RenderError("Unknown nametag position code")
+            if position is None and name is None:
+                raise RenderError("A nametag needs a position code or a name")
+            if name is not None and (
+                not isinstance(name, str)
+                or not name.strip()
+                or len(name) > 24
+                or any(ord(c) < 32 for c in name)
+            ):
+                raise RenderError("Nametag text must be 1-24 printable characters")
+        elif "position" in mark:
+            raise RenderError("position is only valid for nametag drawings")
         if "opacity" in mark and (
             kind != "area"
             or not _number(mark["opacity"])
