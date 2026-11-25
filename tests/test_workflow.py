@@ -62,13 +62,13 @@ def test_review_is_bound_to_latest_proposal(tmp_path):
     workflow.review_analysis(
         project_id, proposal["analysis_id"], proposal["digest"], True, "Coach"
     )
-    workflow.queue_export(project_id, proposal["analysis_id"])
+    workflow.queue_export(project_id, proposal["analysis_id"], proposal["digest"])
     new = workflow.submit_analysis(
         project_id, events, [], "# Changed", [evidence["id"]]
     )
     assert new["revision"] == 2
     with pytest.raises(WorkflowError):
-        workflow.queue_export(project_id, proposal["analysis_id"])
+        workflow.queue_export(project_id, proposal["analysis_id"], proposal["digest"])
 
 
 def test_url_id_must_be_literal_and_root_cannot_cross_symlink(tmp_path):
@@ -344,7 +344,7 @@ def test_caller_mutation_stale_digest_and_rejection(tmp_path):
         project_id, proposal["analysis_id"], proposal["digest"], False, "Coach"
     )
     with pytest.raises(WorkflowError):
-        workflow.queue_export(project_id, proposal["analysis_id"])
+        workflow.queue_export(project_id, proposal["analysis_id"], proposal["digest"])
     assert len(Workflow(tmp_path).get_analysis(proposal["analysis_id"])["reviews"]) == 2
 
 

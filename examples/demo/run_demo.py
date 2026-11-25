@@ -7,6 +7,8 @@ from pathlib import Path
 
 from once_sport_mcp import formation, rendering, tracking
 
+if len(sys.argv) != 2:
+    sys.exit("usage: python run_demo.py WORKDIR")
 D = Path(sys.argv[1])
 src = D / "synthetic-pitch.mp4"
 W, H = 1280, 720
@@ -128,4 +130,4 @@ info = {
     "speed": m["clips"][1]["speed"],
     "clips": m["clips"],
 }
-(D / "demo-info.json").write_text(json.dumps(info, indent=1))
+(D / "demo-info.json").write_text(json.dumps(info, indent=1), encoding="utf-8")

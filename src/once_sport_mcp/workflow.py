@@ -17,6 +17,33 @@ from .rendering import RenderError, validate_plan
 from .tracking import TrackingError, validate_tracking_request
 
 
+def _reject_constant(value):
+    raise ValueError(f"Non-finite JSON constant {value}")
+
+
+def _unique_pairs(pairs):
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("Duplicate JSON keys")
+    return dict(pairs)
+
+
+def _read_verified_json(artifact):
+    """Read an artifact without following symlinks and verify the parsed bytes."""
+    descriptor = os.open(artifact["path"], os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        raw = stream.read()
+    if len(raw) != artifact.get("size_bytes") or (
+        hashlib.sha256(raw).hexdigest() != artifact.get("sha256")
+    ):
+        raise ValueError("Artifact changed after verification")
+    return json.loads(
+        raw.decode("utf-8"),
+        parse_constant=_reject_constant,
+        object_pairs_hook=_unique_pairs,
+    )
+
+
 class WorkflowError(Exception):
     def __init__(self, code, message):
         self.code = code
@@ -454,8 +481,7 @@ class Workflow:
                     ) from exc
                 raise
             try:
-                with open(artifact["path"], encoding="utf-8") as stream:
-                    result = json.load(stream)
+                result = _read_verified_json(artifact)
             except (OSError, UnicodeError, TypeError, ValueError, RecursionError):
                 raise WorkflowError(
                     "invalid_tracking_job", "Tracking result JSON is invalid."
@@ -655,9 +681,7 @@ class Workflow:
             )
         return analysis
 
-    def queue_export(
-        self, project_id, analysis_id, expected_digest=None, *, playlist=None
-    ):
+    def queue_export(self, project_id, analysis_id, expected_digest, *, playlist=None):
         if playlist is not None and (not tools._text(playlist) or len(playlist) > 60):
             raise WorkflowError(
                 "invalid_playlist",
@@ -665,8 +689,6 @@ class Workflow:
             )
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            if expected_digest is None:
-                expected_digest = self._get("analyses", analysis_id, con)["digest"]
             analysis = self._approved(con, project_id, analysis_id, expected_digest)
             if playlist is not None and not any(
                 playlist in event.get("playlists", [])

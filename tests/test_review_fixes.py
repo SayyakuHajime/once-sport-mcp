@@ -69,3 +69,30 @@ def test_xml_text_keeps_whitespace_as_spaces_and_xlsx_has_gray125_fill():
     assert stats_export._clean_xml_text("a\nb\tc") == "a b c"
     with open(stats_export.__file__, encoding="utf-8") as handle:
         assert "gray125" in handle.read()
+
+
+def test_verified_json_reader_rejects_symlinks_duplicates_and_changes(tmp_path):
+    import hashlib
+
+    from once_sport_mcp.workflow import _read_verified_json
+
+    def artifact(path, raw):
+        path.write_bytes(raw)
+        return {
+            "path": str(path),
+            "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+
+    good = artifact(tmp_path / "a.json", b'{"a": 1}')
+    assert _read_verified_json(good) == {"a": 1}
+    for raw in (b'{"a": 1, "a": 2}', b'{"a": NaN}'):
+        with pytest.raises(ValueError):
+            _read_verified_json(artifact(tmp_path / "b.json", raw))
+    stale = dict(good, sha256="0" * 64)
+    with pytest.raises(ValueError):
+        _read_verified_json(stale)
+    link = tmp_path / "link.json"
+    link.symlink_to(tmp_path / "a.json")
+    with pytest.raises(OSError):
+        _read_verified_json(dict(good, path=str(link)))

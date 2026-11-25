@@ -9,6 +9,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 W, H, FPS, DUR = 1280, 720, 30, 12
+if len(sys.argv) != 2:
+    sys.exit("usage: python make_synthetic_pitch.py OUTDIR")
 OUT = Path(sys.argv[1])
 OUT.mkdir(parents=True, exist_ok=True)
 src = OUT / "synthetic-pitch.mp4"
@@ -118,5 +120,7 @@ p = subprocess.Popen(
 for n in range(FPS * DUR):
     p.stdin.write(frame(n).tobytes())
 p.stdin.close()
-p.wait()
+if p.wait() != 0:
+    sys.exit("ffmpeg failed")
+wav.unlink(missing_ok=True)
 print("ok", src)

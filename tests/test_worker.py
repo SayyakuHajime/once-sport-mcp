@@ -304,7 +304,9 @@ def test_real_worker_export_publishes_reel_and_sidecar(tmp_path, drawings):
     review = workflow.review_analysis(
         project["id"], proposal["analysis_id"], proposal["digest"], True, "Coach"
     )
-    export = workflow.queue_export(project["id"], proposal["analysis_id"])
+    export = workflow.queue_export(
+        project["id"], proposal["analysis_id"], proposal["digest"]
+    )
     run_worker(tmp_path, once=True)
 
     job = workflow.get_job(export["job_id"])
@@ -434,7 +436,9 @@ def test_export_keeps_exact_review_and_analysis(tmp_path, monkeypatch):
         "once_sport_mcp.rendering",
         types.SimpleNamespace(render_reel=render),
     )
-    export = workflow.queue_export(created["project_id"], proposal["analysis_id"])
+    export = workflow.queue_export(
+        created["project_id"], proposal["analysis_id"], proposal["digest"]
+    )
     run_worker(tmp_path, once=True)
     assert workflow.get_job(export["job_id"])["status"] == "completed"
     assert called == [(events, [], False)]
@@ -776,7 +780,9 @@ def prepared_export(workflow):
     workflow.review_analysis(
         project["id"], proposal["analysis_id"], proposal["digest"], True, "Coach"
     )
-    export = workflow.queue_export(project["id"], proposal["analysis_id"])
+    export = workflow.queue_export(
+        project["id"], proposal["analysis_id"], proposal["digest"]
+    )
     return project, proposal, export, source
 
 
@@ -1127,7 +1133,9 @@ def real_export_for_render_cancellation(tmp_path):
     workflow.review_analysis(
         project["id"], proposal["analysis_id"], proposal["digest"], True, "Coach"
     )
-    export = workflow.queue_export(project["id"], proposal["analysis_id"])
+    export = workflow.queue_export(
+        project["id"], proposal["analysis_id"], proposal["digest"]
+    )
     return workflow, project, export
 
 
