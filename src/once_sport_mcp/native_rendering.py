@@ -473,6 +473,16 @@ def validate_native_plan(events: list[dict], drawings: list[dict], media: dict) 
             raise rendering.RenderError(
                 "Native Once export supports arrows and ellipses only"
             )
+        if "dash" in mark and mark.get("dash"):
+            raise rendering.RenderError(
+                "Native Once export does not support dashed arrows"
+            )
+        if any(
+            key in mark for key in ("fade_in_seconds", "fade_out_seconds", "easing")
+        ):
+            raise rendering.RenderError(
+                "Native Once export does not support fades or keyframe easing"
+            )
         if "text" in mark:
             raise rendering.RenderError(
                 "Native Once export does not support text annotations"

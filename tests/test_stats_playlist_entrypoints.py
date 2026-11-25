@@ -123,7 +123,20 @@ def test_statistics_requires_approved_exact_digest_and_publishes_verified_files(
     }
     with zipfile.ZipFile(output / "statistics.xlsx") as workbook:
         assert workbook.testzip() is None
-    assert json.loads((output / "statistics.json").read_text())["event_count"] == 2
+    statistics = json.loads((output / "statistics.json").read_text())
+    assert statistics["event_count"] == 2
+    assert statistics["summed_clip_seconds"] == 2.0
+    assert statistics["coverage_seconds"] == 2.0
+    assert statistics["scoreline"] == "Home 0 - 0 Away"
+    html = (output / "statistics.html").read_text()
+    assert "By team/phase" in html and "Playlists" in html
+    assert "<svg" in html and "<script" not in html.lower()
+    with zipfile.ZipFile(output / "statistics.xlsx") as workbook:
+        assert workbook.testzip() is None
+        workbook_xml = workbook.read("xl/workbook.xml")
+        assert b'<sheet name="Summary"' in workbook_xml
+        assert b'<sheet name="Team Phase"' in workbook_xml
+        assert b'<sheet name="Playlists"' in workbook_xml
     assert {artifact["path"].rsplit("/", 1)[-1] for artifact in artifacts} == {
         "statistics.xlsx",
         "statistics.html",

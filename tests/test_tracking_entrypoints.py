@@ -198,7 +198,7 @@ def test_tracking_mcp_tool_is_conditional_strict_and_queues_reviewable_evidence(
         ):
             await client.initialize()
             discovered = {tool.name: tool for tool in (await client.list_tools()).tools}
-            assert len(discovered) == 21
+            assert len(discovered) == 22
             assert "request_analysis_tracking" in discovered
             tracking_tool = discovered["request_analysis_tracking"]
             expected_fields = {
@@ -264,7 +264,7 @@ def test_tracking_mcp_tool_is_conditional_strict_and_queues_reviewable_evidence(
             disabled_tools = {
                 tool.name: tool for tool in (await client.list_tools()).tools
             }
-            assert len(disabled_tools) == 19
+            assert len(disabled_tools) == 20
             assert "request_analysis_tracking" not in disabled_tools
             disabled_capabilities = result(
                 await client.call_tool("analysis_capabilities", {})

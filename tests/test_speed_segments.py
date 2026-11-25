@@ -221,6 +221,22 @@ def test_slow_motion_duplicates_frames_and_stretches_audio(tmp_path):
     assert abs(len(pcm) / 48000 - 4.0) < 0.1
 
 
+def test_speed_source_end_is_clamped_to_the_clip_end(tmp_path):
+    source = tmp_path / "short-tail.mp4"
+    _source(source)
+    output = tmp_path / "short-tail-rendered.mp4"
+    event = {**_EVENT, "end_seconds": 1.05}
+    result = _render_reel(
+        source,
+        [event],
+        [_speed(0.5, start=1.0, end=1.05)],
+        output,
+        fps=10,
+    )
+
+    assert result["clips"][0]["speed"]["source_end_seconds"] == pytest.approx(1.05)
+
+
 def test_fast_forward_drops_frames(tmp_path):
     out, manifest = _render(tmp_path, [_speed(2)])
     clip = manifest["clips"][0]

@@ -224,6 +224,58 @@ def rms(samples):
     return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
 
 
+def test_hold_audio_cut_aligns_to_the_first_duplicate_video_frame(tmp_path):
+    from once_sport_mcp.rendering import render_reel
+
+    source_path = tmp_path / "tone-bursts.mp4"
+    ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x180:rate=10:duration=3",
+        "-f",
+        "lavfi",
+        "-i",
+        "aevalsrc=0.5*sin(2*PI*440*t)*between(t\\,0.2\\,0.59)+0.5*sin(2*PI*880*t)*between(t\\,0.61\\,0.85):s=48000:d=3",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-shortest",
+        source_path,
+    )
+    output = tmp_path / "tone-bursts-held.mp4"
+    render_reel(
+        source_path,
+        [event()],
+        [drawing(start_seconds=0.5, end_seconds=1.5, hold_seconds=0.4)],
+        output,
+    )
+    raw = ffmpeg("-i", output, "-vn", "-ac", 1, "-ar", 48000, "-f", "s16le", "-")
+    samples = array.array("h", raw)
+
+    def segment(start, end):
+        return samples[round(start * 48000) : round(end * 48000)]
+
+    # The source tone through 0.6s precedes the first duplicated frame at 0.6s.
+    assert rms(segment(0.54, 0.59)) > 500
+    assert rms(segment(0.65, 0.9)) < 25
+    # Audio resumes at source 0.6s when the held copies finish at reel 1.0s.
+    assert rms(segment(0.95, 0.99)) < 100
+    assert rms(segment(1.05, 1.2)) > 500
+
+    frames = pil_frames(output)
+    assert mean_difference(frames[5], frames[6]) < 1.0
+    assert mean_difference(frames[6], frames[9]) < 1.0
+    assert mean_difference(frames[9], frames[10]) > 1.0
+
+
 def test_hold_silences_audio_without_losing_or_repeating_source_audio(tmp_path):
     from once_sport_mcp.rendering import render_reel
 
@@ -242,7 +294,7 @@ def test_hold_silences_audio_without_losing_or_repeating_source_audio(tmp_path):
         return samples[round(start * 48000) : round(end * 48000)]
 
     assert rms(segment(0.1, 0.4)) > 100
-    assert rms(segment(0.55, 0.85)) < 25
+    assert rms(segment(0.65, 0.95)) < 25
     assert rms(segment(1.05, 1.35)) > 100
     durations = json.loads(
         subprocess.run(

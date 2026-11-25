@@ -290,7 +290,7 @@ def test_formation_mcp_stdio_tool_is_read_only_discovered_and_strict(tmp_path):
         ):
             await client.initialize()
             discovered = {tool.name: tool for tool in (await client.list_tools()).tools}
-            assert len(discovered) == 21
+            assert len(discovered) == 22
             tool = discovered["build_formation_drawings"]
             assert tool.annotations.readOnlyHint is True
             assert set(tool.inputSchema["properties"]) == {
@@ -357,7 +357,7 @@ def test_formation_mcp_stdio_tool_is_read_only_discovered_and_strict(tmp_path):
             native_discovered = {
                 tool.name: tool for tool in (await client.list_tools()).tools
             }
-            assert len(native_discovered) == 22
+            assert len(native_discovered) == 23
             assert set(native_discovered) - set(discovered) == {
                 "request_native_analysis_export"
             }

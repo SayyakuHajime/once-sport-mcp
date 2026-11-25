@@ -180,6 +180,43 @@ def register_workflow_tools(mcp: FastMCP, workflow: Workflow) -> None:
                 id_prefix=id_prefix,
             )
 
+    @mcp.tool(annotations=READ_ONLY)
+    def build_pitch_drawings(
+        pitch_points: list[list[StrictInt | StrictFloat]],
+        image_points: list[list[StrictInt | StrictFloat]],
+        template: str,
+        event_id: str,
+        start_seconds: StrictInt | StrictFloat,
+        end_seconds: StrictInt | StrictFloat,
+        id_prefix: str = "pitch",
+        color: str = "#6DE0D4",
+        opacity: StrictInt | StrictFloat | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Project pitch templates (circle, half_spaces, five_channels, zone14,
+        zone_grid, rectangle, cover_shadow, offside_line) through a 4-point
+        pitch calibration (metres on a 105x68 pitch -> normalized frame
+        points). Static calibration: fine for a fixed camera or a short shot,
+        it does not follow camera pans. Review-required; does not submit.
+        """
+        from . import pitch, pitch_tool
+
+        try:
+            return pitch_tool.build_pitch_drawings(
+                pitch_points,
+                image_points,
+                template,
+                event_id,
+                start_seconds,
+                end_seconds,
+                id_prefix=id_prefix,
+                color=color,
+                opacity=opacity,
+                params=params,
+            )
+        except pitch.PitchError as exc:
+            return {"error": {"code": "invalid_pitch", "message": str(exc)}}
+
     @mcp.tool(annotations=LOCAL_WRITE)
     def submit_analysis_proposal(
         project_id: str,

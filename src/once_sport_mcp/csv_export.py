@@ -1,4 +1,4 @@
-"""Stage complete CSVs before atomically publishing a new, non-overwriting name."""
+"""Stage the three-column Once CSV for atomic publication; richer data lives in statistics outputs."""
 
 import csv
 import json

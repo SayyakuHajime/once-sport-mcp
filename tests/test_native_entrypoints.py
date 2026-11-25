@@ -109,8 +109,8 @@ def test_mcp_discovery_and_capabilities_are_native_opt_in(tmp_path):
             )
         )
         assert len(legacy) == 4
-        assert len(workspace) == 19
-        assert len(native) == 20
+        assert len(workspace) == 20
+        assert len(native) == 21
         assert "request_native_analysis_export" not in workspace
         assert "request_native_analysis_export" in native
         assert "native_export" not in default_caps
@@ -272,7 +272,7 @@ def test_unconfigured_workspace_does_not_register_native_mcp_tool(tmp_path):
         ):
             await client.initialize()
             names = {tool.name for tool in (await client.list_tools()).tools}
-            assert len(names) == 19
+            assert len(names) == 20
             assert "request_native_analysis_export" not in names
 
     import asyncio

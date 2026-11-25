@@ -46,11 +46,13 @@ def test_phase_and_team_counts_seconds_include_zero_phases():
         "phase": "defending",
         "count": 1,
         "seconds": 1.125,
+        "coverage_seconds": 1.125,
     }
     assert phases["transition_to_attack"] == {
         "phase": "transition_to_attack",
         "count": 0,
         "seconds": 0.0,
+        "coverage_seconds": 0.0,
     }
     assert stats["by_team"] == [
         {"team": "Alpha", "count": 1, "seconds": 1.125},
@@ -143,6 +145,7 @@ def test_goals_are_ordered_by_period_and_start_time():
             "period": 1,
             "start_seconds": 10,
             "kind": "goal",
+            "match_clock": "",
         },
         {
             "event_id": "g-later",
@@ -150,6 +153,7 @@ def test_goals_are_ordered_by_period_and_start_time():
             "period": 1,
             "start_seconds": 90,
             "kind": "goal",
+            "match_clock": "",
         },
         {
             "event_id": "g-second-period",
@@ -157,6 +161,7 @@ def test_goals_are_ordered_by_period_and_start_time():
             "period": 2,
             "start_seconds": 1.25,
             "kind": "goal_conceded",
+            "match_clock": "",
         },
     ]
 
@@ -203,8 +208,36 @@ def test_players_flags_playlists_and_custom_title():
 
     assert stats["title"] == "Review summary"
     assert stats["players"] == [
-        {"player": "Ari", "count": 2},
-        {"player": "Zoe", "count": 1},
+        {
+            "player": "Ari",
+            "count": 2,
+            "by_phase": {
+                "defending": 1,
+                "transition_to_attack": 0,
+                "attacking": 1,
+                "transition_to_defend": 0,
+                "set_piece_attack": 0,
+                "set_piece_defend": 0,
+                "goal": 0,
+                "goal_conceded": 0,
+            },
+            "by_flag": {"good": 1, "bad": 1, "favourite": 0},
+        },
+        {
+            "player": "Zoe",
+            "count": 1,
+            "by_phase": {
+                "defending": 0,
+                "transition_to_attack": 0,
+                "attacking": 1,
+                "transition_to_defend": 0,
+                "set_piece_attack": 0,
+                "set_piece_defend": 0,
+                "goal": 0,
+                "goal_conceded": 0,
+            },
+            "by_flag": {"good": 1, "bad": 0, "favourite": 0},
+        },
     ]
     assert stats["flags"] == {"good": 1, "bad": 1, "favourite": 1}
     assert stats["playlists"] == [
@@ -334,6 +367,12 @@ def test_xlsx_parts_are_well_formed_and_cells_preserve_values(tmp_path):
             "Events",
             "Goals",
             "Players",
+            "By Team",
+            "Team Phase",
+            "By Action",
+            "By Period",
+            "Flags",
+            "Playlists",
         ]
         styles = ET.fromstring(archive.read("xl/styles.xml"))
         assert styles.find(".//m:b", namespace) is not None

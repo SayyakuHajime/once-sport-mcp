@@ -51,7 +51,7 @@ Turns a host agent's analysis of a football video into reviewed, reproducible ou
 ## Status
 <a id="section-status"></a>
 
-**Pre-release (`0.1.0a4`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
+**Pre-release (`0.1.0a5`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
 
 - Native Once export rejects holds, speed segments, text, flags and the newer drawing kinds; use the custom renderer for them.
 - Tracking is seeded by the host, one target per job. There is no re-identification, occlusion recovery or automatic player detection.
@@ -138,9 +138,14 @@ The same flow is available from the CLI: `uv run once-sport-workflow --help`.
 ## Features
 <a id="section-features"></a>
 
-Drawing kinds (custom renderer): `ellipse`, `arrow`, `line`, `polygon`, `label`, `polyline`, `curve`, `area`, `spotlight`, `stopwatch`, `nametag`, and `speed` (slow motion 0.25/0.5x or fast forward 2/4x, audio silent inside). Arrows have tangent-aligned notched heads; `polyline` takes `smooth` (spline through the points) and `line`/`arrow`/`polyline`/`curve` take `dash`. `nametag` shows a position badge (`GK`, `LB`, `LCB`, `CM`, `AMF`, `CF`, `RW`, ...) and an optional name (max 24 chars) above a player. Drawings accept `keyframes` for movement, and `hold_seconds` pauses the clip on a drawing (time stop).
+Drawing kinds (custom renderer): `ellipse`, `arrow`, `line`, `polygon`, `label`, `polyline`, `curve`, `area`, `spotlight`, `stopwatch`, `nametag`, and `speed` (slow motion 0.25/0.5x or fast forward 2/4x; audio is tempo-stretched and peak-limited inside). Arrows have tangent-aligned notched heads; `polyline` takes `smooth` (spline through the points) and `line`/`arrow`/`polyline`/`curve` take `dash`. `nametag` shows a position badge (`GK`, `LB`, `LCB`, `CM`, `AMF`, `CF`, `RW`, ...) and an optional name (max 24 chars) above a player. Drawings accept `keyframes` for movement (with optional `easing`: `linear` or `ease_in_out`), optional `fade_in_seconds`/`fade_out_seconds`, and `hold_seconds` pauses the clip on a drawing (time stop, silent during the freeze).
 
 - **Tracking:** `request_analysis_tracking` follows one seeded target with OpenCV CSRT and flags loss for review.
+- **Pitch templates:** `build_pitch_drawings` (CLI `pitch`) projects a circle, rectangle, half-spaces, five channels, zone 14, a zone grid, a cover shadow or an offside line through a 4-point pitch calibration (metres on a 105x68 pitch to normalized frame points), so shapes follow the pitch perspective. The calibration is fixed: use it for a static camera or a short shot. Drawings do not follow camera pans yet.
+
+  ![Pitch templates through a perspective calibration](assets/pitch-templates.png)
+- **Animation:** drawings accept `fade_in_seconds`, `fade_out_seconds` and keyframe `easing` (`linear` or `ease_in_out`). Drawings are painted in a fixed order (areas under lines, then spotlights, nametags, labels).
+- **Statistics:** HTML and XLSX carry the same tables (phase, team, action, period, flags, playlists, players by phase and flag, goals, scoreline), interval-union coverage next to summed clip seconds, SVG charts, and `MM:SS` match clock when events give `clock_offset_seconds` per period.
 - **Formations:** `build_formation_drawings` composes 2-11 tracked targets into lines, rings or spotlights, an area, and optional nametags (`tags`, CLI `--tag POSITION[:NAME]`). It stops before targets might overlap and never submits anything itself.
 - **Statistics:** XLSX, HTML and JSON counts by phase, team, action, period, goals, players, flags and playlists. No video needed.
 - **Playlists:** `request_analysis_export(playlist="NAME")` renders only the events in that playlist.

@@ -134,6 +134,35 @@ def _build_parser() -> argparse.ArgumentParser:
     track_target.add_argument("--end", type=float, required=True)
     track_target.add_argument("--bbox", type=float, nargs=4, required=True)
 
+    pitch_cmd = commands.add_parser("pitch")
+    pitch_cmd.add_argument(
+        "--pitch-point",
+        dest="pitch_points",
+        nargs=2,
+        type=float,
+        action="append",
+        required=True,
+        metavar=("X_M", "Y_M"),
+    )
+    pitch_cmd.add_argument(
+        "--image-point",
+        dest="image_points",
+        nargs=2,
+        type=float,
+        action="append",
+        required=True,
+        metavar=("U", "V"),
+    )
+    pitch_cmd.add_argument("--template", required=True)
+    pitch_cmd.add_argument("--event-id", required=True)
+    pitch_cmd.add_argument("--start", type=float, required=True)
+    pitch_cmd.add_argument("--end", type=float, required=True)
+    pitch_cmd.add_argument(
+        "--params", default="{}", help="JSON object of template parameters"
+    )
+    pitch_cmd.add_argument("--color", default="#6DE0D4")
+    pitch_cmd.add_argument("--id-prefix", default="pitch")
+
     formation = commands.add_parser("formation")
     formation.add_argument("project_id")
     formation.add_argument("--event-id", required=True)
@@ -239,6 +268,23 @@ def _dispatch(args: argparse.Namespace, workflow: Workflow) -> Any:
         )
     if args.command == "track-target":
         return workflow.queue_tracking(args.project_id, args.start, args.end, args.bbox)
+    if args.command == "pitch":
+        from . import pitch, pitch_tool
+
+        try:
+            return pitch_tool.build_pitch_drawings(
+                args.pitch_points,
+                args.image_points,
+                args.template,
+                args.event_id,
+                args.start,
+                args.end,
+                id_prefix=args.id_prefix,
+                color=args.color,
+                params=json.loads(args.params),
+            )
+        except (pitch.PitchError, ValueError) as exc:
+            return {"error": {"code": "invalid_pitch", "message": str(exc)}}
     if args.command == "formation":
         return workflow.build_formation(
             args.project_id,

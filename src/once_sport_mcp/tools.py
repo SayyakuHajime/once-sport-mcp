@@ -21,7 +21,7 @@ REQUIRED = {
     "phase",
     "action",
 }
-ALLOWED = REQUIRED | {"players", "notes", "flag", "playlists"}
+ALLOWED = REQUIRED | {"players", "notes", "flag", "playlists", "clock_offset_seconds"}
 
 
 def _text(value):
@@ -85,6 +85,12 @@ def validate_timeline(events) -> TimelineResult:
             errors.append(f"{prefix}.phase: unknown phase")
         if type(event.get("period")) is not int or event["period"] not in (1, 2, 3, 4):
             errors.append(f"{prefix}.period: must be 1, 2, 3, or 4")
+        if "clock_offset_seconds" in event:
+            offset = event["clock_offset_seconds"]
+            if type(offset) not in (int, float) or not 0 <= offset <= 1e6:
+                errors.append(
+                    f"{prefix}.clock_offset_seconds: must be a number in [0, 1e6]"
+                )
         numbers = []
         for key in ("start_seconds", "end_seconds"):
             value = event.get(key)

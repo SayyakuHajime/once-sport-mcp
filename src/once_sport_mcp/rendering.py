@@ -140,6 +140,7 @@ def _render_reel(
     )
     clips = []
     count = 0
+    overlay_cache = [None, None]
     with tempfile.TemporaryDirectory(
         prefix="once-render-", dir=destination.parent
     ) as work:
@@ -170,7 +171,7 @@ def _render_reel(
                 ),
                 None,
             )
-            speed_first = speed_last = None
+            speed_first = speed_last = 0
             speed_repeat = 1
             speed_step = 1
             if speed_mark is not None:
@@ -229,7 +230,7 @@ def _render_reel(
                 )
                 if in_speed and (frame_index - speed_first) % speed_step:
                     continue
-                _paint(path, event, drawings, start + frame_index / rate)
+                _paint(path, event, drawings, start + frame_index / rate, overlay_cache)
                 if in_speed and frame_index == speed_first:
                     speed_output_start = count - clip_start_count
                 painted = work / f"frame-{count:08d}.png"
@@ -273,7 +274,7 @@ def _render_reel(
                 clip["speed"] = {
                     "drawing_id": speed_mark["id"],
                     "source_start_seconds": speed_source_start,
-                    "source_end_seconds": start + speed_last / rate,
+                    "source_end_seconds": min(end, start + speed_last / rate),
                     "speed": speed_mark["speed"],
                     "output_frames": speed_output_frames,
                     "reel_start_seconds": (clip_start_count + speed_output_start)
@@ -308,7 +309,15 @@ def _render_reel(
                     if "hold" in clip:
                         hold = clip["hold"]
                         cuts.append(
-                            (hold["source_seconds"], 0.0, hold["hold_seconds"], None)
+                            (
+                                min(
+                                    clip["source_end_seconds"],
+                                    hold["source_seconds"] + 1 / rate,
+                                ),
+                                0.0,
+                                hold["hold_seconds"],
+                                None,
+                            )
                         )
                     if "speed" in clip:
                         speed = clip["speed"]
@@ -548,6 +557,8 @@ def _positions(mark, time):
             mix = (time - left["time_seconds"]) / (
                 right["time_seconds"] - left["time_seconds"]
             )
+            if mark.get("easing", "linear") == "ease_in_out":
+                mix = mix * mix * (3 - 2 * mix)
             return [
                 [a + (b - a) * mix for a, b in zip(p, q)]
                 for p, q in zip(left["points"], right["points"])
@@ -651,14 +662,23 @@ def _arrow_head(path, length, spread=0.42):
         )
         for sign in (-1, 1)
     ]
-    notch = (
-        tip[0] - 0.7 * length * math.cos(angle),
-        tip[1] - 0.7 * length * math.sin(angle),
-    )
+    notch = _trim_end(path, length * 0.7)[-1]
     return [tip, wings[0], notch, wings[1]], notch
 
 
-_OVERLAY_CACHE = [None, None]
+def _drawing_z_tier(kind):
+    """Stable painter tiers: background regions first, annotations last."""
+    if kind == "area":
+        return 0
+    if kind in ("line", "polyline", "arrow", "curve", "polygon"):
+        return 1
+    if kind in ("ellipse", "spotlight"):
+        return 2
+    if kind == "nametag":
+        return 3
+    return 4
+
+
 _FONT_DIRS = (
     "/usr/share/fonts/TTF",
     "/usr/share/fonts/truetype/dejavu",
@@ -689,19 +709,119 @@ def _font(size, bold=False):
     return ImageFont.load_default(size)
 
 
-def _paint(path, event, drawings, time):
+def _wrap_label(text, measure, max_width):
+    """Wrap at spaces; split characters only inside an overlong word."""
+    lines = []
+    line = ""
+    for word in text.split():
+        candidate = f"{line} {word}" if line else word
+        if measure(candidate) <= max_width:
+            line = candidate
+            continue
+        if line:
+            lines.append(line)
+            line = ""
+        if measure(word) <= max_width:
+            line = word
+            continue
+        for character in word:
+            if line and measure(line + character) > max_width:
+                lines.append(line)
+                line = ""
+            line += character
+    if line:
+        lines.append(line)
+    return lines
+
+
+def _place_tag_box(
+    left,
+    top,
+    box_width,
+    box_height,
+    canvas_width,
+    canvas_height,
+    footer_height,
+    occupied,
+    gap,
+    margin=4,
+):
+    """Clamp a nametag to the footer-safe frame and greedily avoid prior tags."""
+    minimum = margin
+    left = max(minimum, min(left, canvas_width - box_width - minimum))
+    minimum_top = minimum
+    maximum_top = max(minimum_top, canvas_height - footer_height - box_height - minimum)
+    preferred = max(minimum_top, min(top, maximum_top))
+    candidates = {preferred, minimum_top, maximum_top}
+    for other_left, other_top, other_right, other_bottom in occupied:
+        if left < other_right + gap and left + box_width > other_left - gap:
+            candidates.add(other_top - box_height - gap)
+            candidates.add(other_bottom + gap)
+    candidates = {
+        candidate
+        for candidate in candidates
+        if minimum_top <= candidate <= maximum_top
+        and all(
+            not (
+                left < other_right + gap
+                and left + box_width > other_left - gap
+                and candidate < other_bottom + gap
+                and candidate + box_height > other_top - gap
+            )
+            for other_left, other_top, other_right, other_bottom in occupied
+        )
+    }
+    placed_top = (
+        min(candidates, key=lambda candidate: (abs(candidate - preferred), candidate))
+        if candidates
+        else preferred
+    )
+    return left, placed_top, left + box_width, placed_top + box_height
+
+
+def _fade_alpha(mark, time):
+    """Compute [0, 1] alpha multiplier from optional fade-in/out ramps."""
+    alpha = 1.0
+    fade_in = mark.get("fade_in_seconds")
+    if fade_in:
+        alpha = min(alpha, max(0.0, (time - mark["start_seconds"]) / fade_in))
+    fade_out = mark.get("fade_out_seconds")
+    if fade_out:
+        alpha = min(alpha, max(0.0, (mark["end_seconds"] - time) / fade_out))
+    return alpha
+
+
+def _with_alpha(image, factor):
+    """Return an RGBA copy with alpha scaled by `factor`, or None when transparent."""
+    if factor >= 1.0 - 1e-6:
+        return image
+    if factor <= 1e-6:
+        return None
+    faded = image.copy()
+    faded.putalpha(faded.getchannel("A").point(lambda value: round(value * factor)))
+    return faded
+
+
+def _paint(path, event, drawings, time, overlay_cache=None):
     from PIL import Image, ImageDraw
 
+    overlay_cache = overlay_cache if overlay_cache is not None else [None, None]
     with Image.open(path) as source:
         base = source.convert("RGB")
     width, height = base.size
     # Supersample 3x for SD/HD-ready sizes, 2x above 720p to bound memory/time.
     scale = 3 if height <= 720 else 2
+    strip = min(height, 120)
     layer = Image.new("RGBA", (width * scale, height * scale))
     pen = ImageDraw.Draw(layer)
     stroke = max(2, height / 200) * scale
     halo = "#101B23"
     font = _font(max(11, round(height / 32)) * scale)
+    title = " · ".join(str(event.get(k, "")) for k in ("team", "phase", "action"))
+    footer_bounds = pen.multiline_textbbox(
+        (0, 0), f"0.00s   |   {title}", font=font, spacing=2 * scale
+    )
+    footer_height = min(strip * scale, footer_bounds[3] - footer_bounds[1] + 14 * scale)
 
     def label(text, anchor, title=False, color="#F6F4EC", pen=None, canvas_h=None):
         pen = pen or ImageDraw.Draw(layer)
@@ -714,17 +834,9 @@ def _paint(path, event, drawings, time):
                 18 * scale, height * scale - max(40 * scale, font.size + 18 * scale)
             )
         )
-        words = text.split()
-        lines = []
-        line = ""
-        for word in words:
-            for char in word + " ":
-                if pen.textlength(line + char, font=font) > max_width - 12 * scale:
-                    lines.append(line.rstrip())
-                    line = ""
-                line += char
-        if line.strip():
-            lines.append(line.rstrip())
+        lines = _wrap_label(
+            text, lambda value: pen.textlength(value, font=font), max_width - 12 * scale
+        )
         max_lines = (
             1
             if title
@@ -755,13 +867,18 @@ def _paint(path, event, drawings, time):
             spacing=2 * scale,
         )
 
-    active = [
-        mark
-        for mark in drawings
-        if mark["event_id"] == event["event_id"]
-        and mark["kind"] != "speed"
-        and mark["start_seconds"] <= time < mark["end_seconds"]
-    ]
+    active = sorted(
+        (
+            mark
+            for mark in drawings
+            if mark["event_id"] == event["event_id"]
+            and mark["kind"] != "speed"
+            and mark["start_seconds"] <= time < mark["end_seconds"]
+        ),
+        key=lambda mark: _drawing_z_tier(mark["kind"]),
+    )
+    alphas = [_fade_alpha(mark, time) for mark in active]
+    uniform_fade = len({round(alpha, 6) for alpha in alphas}) == 1
     key = None
     if active:
         key = (
@@ -780,21 +897,22 @@ def _paint(path, event, drawings, time):
                     round(max(0, time - mark["start_seconds"]) * 10)
                     if mark["kind"] == "stopwatch"
                     else None,
+                    None if uniform_fade else round(alpha, 4),
                 )
-                for mark in active
+                for mark, alpha in zip(active, alphas)
             ),
         )
     overlay = None
-    if key is not None and _OVERLAY_CACHE[0] == key:
-        overlay = _OVERLAY_CACHE[1]
+    if key is not None and overlay_cache[0] == key:
+        overlay = overlay_cache[1]
     elif key is not None:
-        for mark in drawings:
-            if mark["event_id"] != event["event_id"] or not (
-                mark["start_seconds"] <= time < mark["end_seconds"]
-            ):
+        placed_tags = []
+        for mark, alpha in zip(active, alphas):
+            if not uniform_fade and alpha <= 1e-6:
                 continue
-            if mark["kind"] == "speed":
-                continue
+            fade_mark = not uniform_fade and alpha < 1.0 - 1e-6
+            target_layer = Image.new("RGBA", layer.size) if fade_mark else layer
+            target_pen = ImageDraw.Draw(target_layer) if fade_mark else pen
             pts = [
                 (x * width * scale, y * height * scale)
                 for x, y in _positions(mark, time)
@@ -823,33 +941,31 @@ def _paint(path, event, drawings, time):
                 text = f"{minutes}:{tenths / 10:04.1f}"
                 if mark.get("text"):
                     text = f"{mark['text']} {text}"
-                label(text, pts[0], color=color)
-                continue
-            if kind == "label":
-                label(mark["text"], pts[0], color=color)
-                continue
-            if kind == "area":
-                fill_layer = Image.new("RGBA", layer.size)
+                label(text, pts[0], color=color, pen=target_pen)
+            elif kind == "label":
+                label(mark["text"], pts[0], color=color, pen=target_pen)
+            elif kind == "area":
+                fill_layer = Image.new("RGBA", target_layer.size)
                 rgb = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
                 ImageDraw.Draw(fill_layer).polygon(
                     pts, fill=(*rgb, round(255 * mark.get("opacity", 0.25)))
                 )
-                layer = Image.alpha_composite(layer, fill_layer)
-                pen = ImageDraw.Draw(layer)
+                target_layer = Image.alpha_composite(target_layer, fill_layer)
+                target_pen = ImageDraw.Draw(target_layer)
                 outline = pts + [pts[0]]
-                pen.line(
+                target_pen.line(
                     outline, fill=halo, width=round(stroke + 3 * scale), joint="curve"
                 )
-                pen.line(outline, fill=color, width=round(stroke), joint="curve")
+                target_pen.line(outline, fill=color, width=round(stroke), joint="curve")
             elif kind == "spotlight":
                 (cx, cy), (rx, ry) = pts
                 box = (cx - rx, cy - ry, cx + rx, cy + ry)
                 rgb = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
-                glow = Image.new("RGBA", layer.size)
+                glow = Image.new("RGBA", target_layer.size)
                 glow_pen = ImageDraw.Draw(glow)
                 style = mark.get("style", "ground")
                 if style == "ground":
-                    for expansion, alpha in ((6 * scale, 16), (3 * scale, 28)):
+                    for expansion, alpha_ring in ((6 * scale, 16), (3 * scale, 28)):
                         glow_pen.ellipse(
                             (
                                 box[0] - expansion,
@@ -857,12 +973,16 @@ def _paint(path, event, drawings, time):
                                 box[2] + expansion,
                                 box[3] + expansion,
                             ),
-                            outline=(*rgb, alpha),
+                            outline=(*rgb, alpha_ring),
                             width=2 * scale,
                         )
                     glow_pen.ellipse(box, fill=(*rgb, 64))
                 else:
-                    for expansion, alpha in ((6 * scale, 18), (3 * scale, 32), (0, 50)):
+                    for expansion, alpha_ring in (
+                        (6 * scale, 18),
+                        (3 * scale, 32),
+                        (0, 50),
+                    ):
                         glow_pen.ellipse(
                             (
                                 box[0] - expansion,
@@ -870,18 +990,18 @@ def _paint(path, event, drawings, time):
                                 box[2] + expansion,
                                 box[3] + expansion,
                             ),
-                            outline=(*rgb, alpha),
+                            outline=(*rgb, alpha_ring),
                             width=max(scale, round(stroke + expansion / 3)),
                         )
-                layer = Image.alpha_composite(layer, glow)
-                pen = ImageDraw.Draw(layer)
-                pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
-                pen.ellipse(box, outline=color, width=round(stroke))
+                target_layer = Image.alpha_composite(target_layer, glow)
+                target_pen = ImageDraw.Draw(target_layer)
+                target_pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
+                target_pen.ellipse(box, outline=color, width=round(stroke))
             elif kind == "ellipse":
                 (cx, cy), (rx, ry) = pts
                 box = (cx - rx, cy - ry, cx + rx, cy + ry)
-                pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
-                pen.ellipse(box, outline=color, width=round(stroke))
+                target_pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
+                target_pen.ellipse(box, outline=color, width=round(stroke))
             elif kind == "nametag":
                 position = mark.get("position")
                 name = mark.get("text")
@@ -898,30 +1018,40 @@ def _paint(path, event, drawings, time):
                 if name:
                     parts.append((name, regular, "#FFFFFF", "#101B23"))
                 widths = [
-                    pen.textlength(text, font=font) + 2 * pad
-                    for text, font, _, _ in parts
+                    target_pen.textlength(text, font=part_font) + 2 * pad
+                    for text, part_font, _, _ in parts
                 ]
                 tag_w, tag_h = sum(widths), tag_size + 2 * pad
                 lift = height * scale * 0.12
-                left = max(
-                    4 * scale,
-                    min(ax - tag_w / 2, width * scale - tag_w - 4 * scale),
+                preferred_top = ay - lift - tag_h
+                if preferred_top < 4 * scale:
+                    preferred_top = ay + lift * 0.3
+                box = _place_tag_box(
+                    ax - tag_w / 2 - scale,
+                    preferred_top - scale,
+                    tag_w + 2 * scale,
+                    tag_h + 2 * scale,
+                    width * scale,
+                    height * scale,
+                    footer_height,
+                    placed_tags,
+                    2 * scale,
+                    margin=4 * scale,
                 )
+                placed_tags.append(box)
+                box_left, box_top, _, _ = box
+                left, top = box_left + scale, box_top + scale
                 pointer_x = min(max(ax, left + tag_h / 2), left + tag_w - tag_h / 2)
-                top = ay - lift - tag_h
-                below = top < 4 * scale
-                if below:
-                    top = ay + lift * 0.3
-                top = min(top, height * scale - 40 * scale - tag_h)
-                stem_y = top + (0 if below else tag_h)
+                below = top > ay
+                stem_y = top if below else top + tag_h
                 rgb = tuple(int(accent[index : index + 2], 16) for index in (1, 3, 5))
                 # Faint stem keeps the tag attached to the player without hiding them.
-                pen.line(
+                target_pen.line(
                     [(ax, ay), (pointer_x, stem_y)], fill=(*rgb, 120), width=scale * 2
                 )
                 point = tag_h * 0.28
                 tip_y = stem_y + (-point if below else point)
-                pen.polygon(
+                target_pen.polygon(
                     [
                         (pointer_x - point, stem_y),
                         (pointer_x + point, stem_y),
@@ -930,7 +1060,7 @@ def _paint(path, event, drawings, time):
                     fill=halo,
                 )
                 dot = stroke * 1.1
-                pen.ellipse(
+                target_pen.ellipse(
                     (ax - dot, ay - dot, ax + dot, ay + dot),
                     fill=accent,
                     outline=halo,
@@ -938,7 +1068,7 @@ def _paint(path, event, drawings, time):
                 )
                 cursor = left
                 radius = tag_h / 2
-                pen.rounded_rectangle(
+                target_pen.rounded_rectangle(
                     (
                         left - scale,
                         top - scale,
@@ -948,24 +1078,23 @@ def _paint(path, event, drawings, time):
                     radius=radius + scale,
                     fill=halo,
                 )
-                for (text, font, ink, fill), part_w in zip(parts, widths):
-                    pen.rounded_rectangle(
+                for (text, part_font, ink, fill), part_w in zip(parts, widths):
+                    target_pen.rounded_rectangle(
                         (cursor, top, cursor + part_w, top + tag_h),
                         radius=radius,
                         fill=fill,
                     )
-                    bounds = pen.textbbox((0, 0), text, font=font)
-                    pen.text(
+                    bounds = target_pen.textbbox((0, 0), text, font=part_font)
+                    target_pen.text(
                         (
                             cursor + pad - bounds[0],
                             top + (tag_h - (bounds[3] - bounds[1])) / 2 - bounds[1],
                         ),
                         text,
-                        font=font,
+                        font=part_font,
                         fill=ink,
                     )
                     cursor += part_w
-                continue
             else:
                 if kind == "polygon":
                     line = pts + [pts[0]]
@@ -976,32 +1105,44 @@ def _paint(path, event, drawings, time):
                 has_head = kind in ("arrow", "curve") or (
                     kind == "polyline" and mark.get("arrow", False)
                 )
-                head_len = max(9, height / 20) * scale
+                head_len = min(max(9, height / 32) * scale, 0.45 * _path_length(line))
                 head = None
-                if has_head and len(line) >= 2 and _path_length(line) > head_len:
-                    head = _arrow_head(line, head_len)[0]
+                if has_head and len(line) >= 2 and head_len > 0:
+                    head, notch = _arrow_head(line, head_len)
                     line = _trim_end(line, head_len * 0.7)
+                    line[-1] = notch
                 shaft = (
                     _dashes(line, 5 * stroke, 3.2 * stroke)
                     if mark.get("dash")
                     else [line]
                 )
                 for piece in shaft:
-                    pen.line(
+                    target_pen.line(
                         piece, fill=halo, width=round(stroke + 3 * scale), joint="curve"
                     )
                 for piece in shaft:
-                    pen.line(piece, fill=color, width=round(stroke), joint="curve")
+                    target_pen.line(
+                        piece, fill=color, width=round(stroke), joint="curve"
+                    )
                 if head is not None:
-                    pen.polygon(head, fill=halo, outline=halo, width=scale * 2)
-                    pen.polygon(head, fill=color)
-            if mark.get("text"):
-                label(mark["text"], pts[0], color=color)
+                    target_pen.polygon(head, fill=halo, outline=halo, width=scale * 2)
+                    target_pen.polygon(head, fill=color)
+            if mark.get("text") and kind not in ("stopwatch", "label", "nametag"):
+                label(mark["text"], pts[0], color=color, pen=target_pen)
+            if fade_mark:
+                faded_mark = _with_alpha(target_layer, alpha)
+                if faded_mark is not None:
+                    layer = Image.alpha_composite(layer, faded_mark)
+                    pen = ImageDraw.Draw(layer)
+            else:
+                layer = target_layer
+                pen = target_pen
         overlay = layer.resize(base.size, Image.Resampling.LANCZOS)
-        _OVERLAY_CACHE[:] = [key, overlay]
+        overlay_cache[:] = [key, overlay]
     if overlay is not None:
-        base = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
-    title = " · ".join(str(event.get(k, "")) for k in ("team", "phase", "action"))
+        composite = _with_alpha(overlay, alphas[0]) if uniform_fade else overlay
+        if composite is not None:
+            base = Image.alpha_composite(base.convert("RGBA"), composite).convert("RGB")
     strip = min(height, 120)
     top = height - strip
     footer = Image.new("RGBA", (width * scale, strip * scale))
@@ -1074,6 +1215,9 @@ def _validate(events, drawings, info, width, fps):
         "smooth",
         "dash",
         "position",
+        "fade_in_seconds",
+        "fade_out_seconds",
+        "easing",
     }
     hold_owners = set()
     speed_owners = set()
@@ -1153,10 +1297,14 @@ def _validate(events, drawings, info, width, fps):
             speed_owners.add(owner)
         start, end = mark.get("start_seconds"), mark.get("end_seconds")
         event = owners[owner]
-        if not (
-            _number(start)
-            and _number(end)
-            and event["start_seconds"] <= start < end <= event["end_seconds"]
+        if (
+            not isinstance(start, (int, float))
+            or isinstance(start, bool)
+            or not math.isfinite(start)
+            or not isinstance(end, (int, float))
+            or isinstance(end, bool)
+            or not math.isfinite(end)
+            or not event["start_seconds"] <= start < end <= event["end_seconds"]
         ):
             raise RenderError("Drawing display interval must lie within its event")
         if "hold_seconds" in mark:
@@ -1218,6 +1366,30 @@ def _validate(events, drawings, info, width, fps):
             kind != "spotlight" or mark["style"] not in ("halo", "ground")
         ):
             raise RenderError("Spotlight style must be 'halo' or 'ground'")
+        if kind == "speed" and any(
+            key in mark for key in ("fade_in_seconds", "fade_out_seconds", "easing")
+        ):
+            raise RenderError("Speed drawings do not support fades or keyframe easing")
+        fade_in_raw = mark.get("fade_in_seconds")
+        fade_out_raw = mark.get("fade_out_seconds")
+        fade_total = 0.0
+        for fade_key, fade_value in (
+            ("fade_in_seconds", fade_in_raw),
+            ("fade_out_seconds", fade_out_raw),
+        ):
+            if fade_key in mark:
+                if (
+                    not isinstance(fade_value, (int, float))
+                    or isinstance(fade_value, bool)
+                    or not math.isfinite(fade_value)
+                    or not 0 < fade_value <= 5
+                ):
+                    raise RenderError(f"{fade_key} must be a finite number in (0, 5]")
+                fade_total += fade_value
+        if fade_total > (end - start) + 1e-9:
+            raise RenderError("Total fade duration must not exceed drawing duration")
+        if "easing" in mark and mark["easing"] not in ("linear", "ease_in_out"):
+            raise RenderError("easing must be 'linear' or 'ease_in_out'")
         points(mark.get("points"), kind)
         if "color" in mark and (
             not isinstance(mark["color"], str)
