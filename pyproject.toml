@@ -1,6 +1,6 @@
 [project]
 name = "once-sport-mcp"
-version = "0.1.0a1"
+version = "0.1.0a2"
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
