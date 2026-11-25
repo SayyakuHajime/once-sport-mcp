@@ -174,3 +174,34 @@ def test_native_renderer_rejects_custom_drawing_kinds():
     for kind, points in cases.items():
         with pytest.raises(RenderError, match="supports arrows and ellipses only"):
             validate_native_plan([EVENT], [drawing(kind, points)], MEDIA)
+
+
+def test_label_after_area_and_spotlight_is_still_painted(tmp_path):
+    from PIL import Image
+
+    from once_sport_mcp.rendering import _paint
+
+    path = tmp_path / "frame.png"
+    Image.new("RGB", (320, 180), "#183828").save(path)
+    marks = [
+        drawing("area", [[0.4, 0.4], [0.8, 0.4], [0.6, 0.8]], id="a"),
+        drawing("spotlight", [[0.5, 0.5], [0.05, 0.05]], id="s"),
+        drawing("label", [[0.03, 0.05]], id="t", text="HOLD", color="#FF0000"),
+    ]
+    _paint(path, EVENT, marks, 0.5)
+    box = Image.open(path).crop((4, 4, 80, 40))
+    raw = box.tobytes()
+    assert any(raw[i] > 200 and raw[i + 1] < 80 for i in range(0, len(raw), 3))
+
+
+def test_caption_sits_fully_inside_the_frame_bottom(tmp_path):
+    from PIL import Image
+
+    from once_sport_mcp.rendering import _paint
+
+    path = tmp_path / "frame.png"
+    Image.new("RGB", (320, 180), "#000000").save(path)
+    _paint(path, EVENT, [], 0.5)
+    image = Image.open(path).convert("L")
+    bright = [y for y in range(180) for x in range(320) if image.getpixel((x, y)) > 200]
+    assert bright and max(bright) < 176

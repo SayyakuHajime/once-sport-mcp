@@ -531,17 +531,17 @@ def _paint(path, event, drawings, time):
     # Supersample 3x for SD/HD-ready sizes, 2x above 720p to bound memory/time.
     scale = 3 if height <= 720 else 2
     layer = Image.new("RGBA", (width * scale, height * scale))
-    marks_pen = pen = ImageDraw.Draw(layer)
+    pen = ImageDraw.Draw(layer)
     stroke = max(2, height / 200) * scale
     halo = "#101B23"
     font = ImageFont.truetype("DejaVuSans.ttf", max(11, round(height / 32)) * scale)
 
-    def label(text, anchor, title=False, color="#F6F4EC", pen=None):
-        pen = pen or marks_pen
+    def label(text, anchor, title=False, color="#F6F4EC", pen=None, canvas_h=None):
+        pen = pen or ImageDraw.Draw(layer)
         # Wrap long labels so both text and padding stay within the frame.
         max_width = width * scale - 16 * scale
         safe_height = (
-            height * scale
+            (canvas_h or height * scale)
             if title
             else max(
                 18 * scale, height * scale - max(40 * scale, font.size + 18 * scale)
@@ -752,9 +752,10 @@ def _paint(path, event, drawings, time):
     footer = Image.new("RGBA", (width * scale, strip * scale))
     label(
         f"{time:.2f}s   |   {title}",
-        (8 * scale, (height - 32 - top) * scale),
+        (8 * scale, strip * scale),
         True,
         pen=ImageDraw.Draw(footer),
+        canvas_h=strip * scale,
     )
     small = footer.resize((width, strip), Image.Resampling.LANCZOS)
     region = base.crop((0, top, width, height)).convert("RGBA")
