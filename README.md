@@ -51,7 +51,7 @@ Turns a host agent's analysis of a football video into reviewed, reproducible ou
 ## Status
 <a id="section-status"></a>
 
-**Pre-release (`0.1.0a2`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
+**Pre-release (`0.1.0a3`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
 
 - Native Once export rejects holds, speed segments, text, flags and the newer drawing kinds; use the custom renderer for them.
 - Tracking is seeded by the host, one target per job. There is no re-identification, occlusion recovery or automatic player detection.
