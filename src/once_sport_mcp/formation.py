@@ -115,6 +115,8 @@ def build_formation(
         raise FormationError(
             "A formation requires between two and eleven tracking results"
         )
+    if not isinstance(rings, bool):
+        raise FormationError("rings must be a boolean")
     if tags is not None:
         if (
             not isinstance(tags, list)
@@ -125,6 +127,10 @@ def build_formation(
                 "tags must be a list with one dict (or null) per tracked target"
             )
         for tag in tags:
+            if tag is not None and any(
+                not isinstance(value, str) for value in tag.values()
+            ):
+                raise FormationError("Tag position and name must be strings")
             if tag is not None and (
                 set(tag) - {"position", "name"}
                 or not (tag.get("position") or tag.get("name"))
@@ -420,6 +426,8 @@ def build_formation(
         drawings.append(mark)
 
     if label is not None:
+        if hold_at_seconds is not None and hold_at_seconds < start:
+            raise FormationError("hold_at_seconds cannot be before the common start")
         label_from = start if hold_at_seconds is None else hold_at_seconds
         label_time = next((time for time in times if time >= label_from), None)
         if label_time is None:
@@ -481,6 +489,9 @@ def build_formation(
         "phase": "Tracking",
         "action": "Formation",
     }
+    # Paint order: area under links, links under rings/spotlights, tags and label on top.
+    layer = {"area": 0, "line": 1, "nametag": 3, "label": 4}
+    drawings.sort(key=lambda mark: layer.get(mark["kind"], 2))
     try:
         rendering.validate_plan([event], drawings, media)
     except rendering.RenderError as exc:

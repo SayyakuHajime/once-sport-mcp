@@ -275,9 +275,9 @@ _PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 def _clean_xml_text(value):
     return "".join(
-        character
+        " " if character in "\t\n\r" else character
         for character in str(value)
-        if ord(character) >= 32
+        if (ord(character) >= 32 or character in "\t\n\r")
         and not 0x7F <= ord(character) <= 0x9F
         and not 0xD800 <= ord(character) <= 0xDFFF
         and ord(character) not in (0xFFFE, 0xFFFF)
@@ -410,7 +410,7 @@ def _xlsx_parts(stats):
         f'{_XML_DECLARATION}<styleSheet xmlns="{_MAIN_NS}">'
         '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
         '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
-        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
         '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
         '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'

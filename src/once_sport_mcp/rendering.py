@@ -349,12 +349,13 @@ def _render_reel(
                                 * (2 if factor in (0.25, 4) else 1)
                             )
                             fade = min(0.3, silence / 3)
+                            out_fade = min(0.15, silence / 3)
                             filters.append(
                                 f"[1:a:0]atrim=start={position}:end={position + length},"
                                 f"asetpts=PTS-STARTPTS,{tempo},apad,"
                                 f"atrim=duration={silence},"
                                 f"acompressor=threshold=0.1:ratio=4:attack=20:release=300,"
-                                f"afade=t=in:d={fade},afade=t=out:st={silence - 0.15}:d=0.15,"
+                                f"afade=t=in:d={fade},afade=t=out:st={max(0.0, silence - out_fade)}:d={out_fade},"
                                 f"{audio_format}[{label}]"
                             )
                         after_speed = factor is not None
@@ -658,10 +659,38 @@ def _arrow_head(path, length, spread=0.42):
 
 
 _OVERLAY_CACHE = [None, None]
+_FONT_DIRS = (
+    "/usr/share/fonts/TTF",
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu",
+    "/Library/Fonts",
+    "/System/Library/Fonts/Supplemental",
+    "C:/Windows/Fonts",
+)
+
+
+def _font(size, bold=False):
+    """DejaVu Sans (bundled with most Linux installs) with portable fallbacks."""
+    from PIL import ImageFont
+
+    names = (
+        ("DejaVuSans-Bold.ttf", "Arial Bold.ttf", "arialbd.ttf")
+        if bold
+        else ("DejaVuSans.ttf", "Arial.ttf", "arial.ttf")
+    )
+    candidates = list(names) + [
+        str(Path(directory) / name) for directory in _FONT_DIRS for name in names
+    ]
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size)
 
 
 def _paint(path, event, drawings, time):
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     with Image.open(path) as source:
         base = source.convert("RGB")
@@ -672,7 +701,7 @@ def _paint(path, event, drawings, time):
     pen = ImageDraw.Draw(layer)
     stroke = max(2, height / 200) * scale
     halo = "#101B23"
-    font = ImageFont.truetype("DejaVuSans.ttf", max(11, round(height / 32)) * scale)
+    font = _font(max(11, round(height / 32)) * scale)
 
     def label(text, anchor, title=False, color="#F6F4EC", pen=None, canvas_h=None):
         pen = pen or ImageDraw.Draw(layer)
@@ -748,7 +777,7 @@ def _paint(path, event, drawings, time):
                         )
                     ),
                     tuple(map(tuple, _positions(mark, time))),
-                    int(max(0, time - mark["start_seconds"]) * 10)
+                    round(max(0, time - mark["start_seconds"]) * 10)
                     if mark["kind"] == "stopwatch"
                     else None,
                 )
@@ -790,8 +819,8 @@ def _paint(path, event, drawings, time):
                 ]
             if kind == "stopwatch":
                 elapsed = max(0, time - mark["start_seconds"])
-                minutes = int(elapsed // 60)
-                text = f"{minutes}:{elapsed % 60:04.1f}"
+                minutes, tenths = divmod(round(elapsed * 10), 600)
+                text = f"{minutes}:{tenths / 10:04.1f}"
                 if mark.get("text"):
                     text = f"{mark['text']} {text}"
                 label(text, pts[0], color=color)
@@ -859,8 +888,8 @@ def _paint(path, event, drawings, time):
                 group = POSITION_CODES.get(position)
                 accent = mark.get("color") or _POSITION_COLORS.get(group, "#FFD166")
                 tag_size = max(12, round(height / 46)) * scale
-                bold = ImageFont.truetype("DejaVuSans-Bold.ttf", tag_size)
-                regular = ImageFont.truetype("DejaVuSans.ttf", tag_size)
+                bold = _font(tag_size, bold=True)
+                regular = _font(tag_size)
                 ax, ay = pts[0]
                 pad = round(tag_size * 0.32)
                 parts = []
@@ -874,9 +903,11 @@ def _paint(path, event, drawings, time):
                 ]
                 tag_w, tag_h = sum(widths), tag_size + 2 * pad
                 lift = height * scale * 0.12
-                left = min(
-                    max(ax - tag_w / 2, 4 * scale), width * scale - tag_w - 4 * scale
+                left = max(
+                    4 * scale,
+                    min(ax - tag_w / 2, width * scale - tag_w - 4 * scale),
                 )
+                pointer_x = min(max(ax, left + tag_h / 2), left + tag_w - tag_h / 2)
                 top = ay - lift - tag_h
                 below = top < 4 * scale
                 if below:
@@ -885,11 +916,17 @@ def _paint(path, event, drawings, time):
                 stem_y = top + (0 if below else tag_h)
                 rgb = tuple(int(accent[index : index + 2], 16) for index in (1, 3, 5))
                 # Faint stem keeps the tag attached to the player without hiding them.
-                pen.line([(ax, ay), (ax, stem_y)], fill=(*rgb, 120), width=scale * 2)
+                pen.line(
+                    [(ax, ay), (pointer_x, stem_y)], fill=(*rgb, 120), width=scale * 2
+                )
                 point = tag_h * 0.28
                 tip_y = stem_y + (-point if below else point)
                 pen.polygon(
-                    [(ax - point, stem_y), (ax + point, stem_y), (ax, tip_y)],
+                    [
+                        (pointer_x - point, stem_y),
+                        (pointer_x + point, stem_y),
+                        (pointer_x, tip_y),
+                    ],
                     fill=halo,
                 )
                 dot = stroke * 1.1
@@ -1211,10 +1248,19 @@ def _validate(events, drawings, info, width, fps):
             points(key["points"], kind, len(mark["points"]))
             previous = time
 
-    for owner, hold_start in hold_starts.items():
-        span = speed_spans.get(owner)
-        if span is not None and span[0] <= hold_start < span[1]:
-            raise RenderError("A hold cannot start inside a speed segment")
+    rate = fps if fps is not None else (info or {}).get("fps")
+    for owner, span in speed_spans.items() if rate else ():
+        first = owners[owner]["start_seconds"]
+        frames = max(1, math.ceil((owners[owner]["end_seconds"] - first) * rate - 1e-9))
+        speed_first = math.ceil((span[0] - first) * rate - 1e-9)
+        speed_last = min(frames, math.ceil((span[1] - first) * rate - 1e-9))
+        if speed_first >= speed_last:
+            raise RenderError("A speed segment must cover at least one output frame")
+        hold_start = hold_starts.get(owner)
+        if hold_start is not None:
+            hold_frame = math.ceil((hold_start - first) * rate - 1e-9)
+            if speed_first <= hold_frame < speed_last:
+                raise RenderError("A hold cannot start inside a speed segment")
 
 
 def render_reel(

@@ -982,7 +982,7 @@ class Worker:
         (stage / "analysis.md").write_text(proposal["report_markdown"])
         (stage / "proposal.json").write_text(analysis["canonical_json"])
         (stage / "review.json").write_text(canonical(analysis["reviews"][-1]))
-        result = tools.generate_once_import_csv(proposal["events"], "events.csv", stage)
+        result = tools.generate_once_import_csv(render_events, "events.csv", stage)
         if not result.get("ok"):
             raise WorkflowError("csv_failed", "Unable to write event CSV.")
         names = {
