@@ -1,0 +1,317 @@
+{
+  "note": "Captured from the pre-change server over real MCP stdio; paths normalized only.",
+  "schemas": [
+    {
+      "name": "validate_timeline",
+      "inputSchema": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "validate_timelineArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "validate_timelineDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "generate_once_import_csv",
+      "inputSchema": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "events",
+          "filename"
+        ],
+        "title": "generate_once_import_csvArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "generate_once_import_csvDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "search_events",
+      "inputSchema": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Period"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Phase"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Team"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Action"
+          },
+          "player": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Player"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "search_eventsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "search_eventsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "summarize_phases",
+      "inputSchema": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "summarize_phasesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "summarize_phasesDictOutput",
+        "type": "object"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "tool": "validate_timeline",
+      "isError": false,
+      "payload": {
+        "valid": true,
+        "events": [
+          {
+            "event_id": "one",
+            "period": 1,
+            "start_seconds": 0,
+            "end_seconds": 2.5,
+            "team": "Équipe, \"A\"",
+            "phase": "goal",
+            "action": "シュート",
+            "players": [
+              "Ana"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "tool": "validate_timeline",
+      "isError": false,
+      "payload": {
+        "valid": false,
+        "errors": [
+          "events[0].action: required",
+          "events[0].end_seconds: required",
+          "events[0].event_id: required",
+          "events[0].period: required",
+          "events[0].phase: required",
+          "events[0].start_seconds: required",
+          "events[0].team: required",
+          "events[0].phase: unknown phase",
+          "events[0].period: must be 1, 2, 3, or 4",
+          "events[0].start_seconds: must be a finite non-negative number",
+          "events[0].end_seconds: must be a finite non-negative number"
+        ]
+      }
+    },
+    {
+      "tool": "search_events",
+      "isError": false,
+      "payload": {
+        "valid": true,
+        "events": [],
+        "count": 0
+      }
+    },
+    {
+      "tool": "search_events",
+      "isError": false,
+      "payload": {
+        "valid": false,
+        "errors": [
+          "period must be 1, 2, 3, or 4"
+        ]
+      }
+    },
+    {
+      "tool": "summarize_phases",
+      "isError": false,
+      "payload": {
+        "valid": true,
+        "phases": {
+          "defending": {
+            "count": 0,
+            "events": []
+          },
+          "transition_to_attack": {
+            "count": 0,
+            "events": []
+          },
+          "attacking": {
+            "count": 0,
+            "events": []
+          },
+          "transition_to_defend": {
+            "count": 0,
+            "events": []
+          },
+          "set_piece_attack": {
+            "count": 0,
+            "events": []
+          },
+          "set_piece_defend": {
+            "count": 0,
+            "events": []
+          },
+          "goal": {
+            "count": 1,
+            "events": [
+              {
+                "event_id": "one",
+                "period": 1,
+                "start_seconds": 0,
+                "end_seconds": 2.5,
+                "team": "Équipe, \"A\"",
+                "phase": "goal",
+                "action": "シュート",
+                "players": [
+                  "Ana"
+                ]
+              }
+            ]
+          },
+          "goal_conceded": {
+            "count": 0,
+            "events": []
+          }
+        }
+      }
+    },
+    {
+      "tool": "generate_once_import_csv",
+      "isError": false,
+      "payload": {
+        "ok": true,
+        "path": "<OUTPUT>/contract.csv",
+        "event_count": 1,
+        "import_verified": false
+      }
+    },
+    {
+      "tool": "generate_once_import_csv",
+      "isError": false,
+      "payload": {
+        "ok": false,
+        "errors": [
+          "Unable to create CSV; check output directory permissions and choose a new filename"
+        ]
+      }
+    },
+    {
+      "tool": "generate_once_import_csv",
+      "isError": false,
+      "payload": {
+        "ok": false,
+        "errors": [
+          "filename must be a simple .csv name"
+        ]
+      }
+    }
+  ],
+  "csv_sha256": "b48a202c107588d9033ac8d108bdeef2923149bab644c63af555c7e07e6d462b"
+}

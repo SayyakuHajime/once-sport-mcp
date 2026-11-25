@@ -1,0 +1,5 @@
+[
+  {"event_id":"synthetic-1","period":1,"start_seconds":12.5,"end_seconds":16,"team":"Team A","phase":"attacking","action":"Pass to wing","players":["Player A"],"notes":"Synthetic example"},
+  {"event_id":"synthetic-2","period":1,"start_seconds":17,"end_seconds":20,"team":"Team A","phase":"goal","action":"Shot"},
+  {"event_id":"synthetic-3","period":2,"start_seconds":3000,"end_seconds":3004,"team":"Team B","phase":"defending","action":"Block"}
+]

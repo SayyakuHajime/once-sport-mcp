@@ -1,0 +1,28 @@
+[project]
+name = "once-sport-mcp"
+version = "0.1.0a1"
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1,<2",
+    "pillow>=11,<14",
+    "pydantic>=2,<3",
+]
+
+[project.scripts]
+once-sport-mcp = "once_sport_mcp.server:main"
+once-sport-workflow = "once_sport_mcp.workflow_cli:main"
+
+[project.optional-dependencies]
+tracking = [
+    "opencv-contrib-python-headless>=5,<6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

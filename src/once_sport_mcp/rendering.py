@@ -1,0 +1,1002 @@
+"""Custom raster telestration and H.264 reels. No native Once drawings are made."""
+
+import itertools
+import json
+import math
+import subprocess
+from collections.abc import Callable
+from fractions import Fraction
+from pathlib import Path
+
+
+class RenderError(Exception):
+    """Invalid input, cancellation, or media processing failure."""
+
+
+def _check(cancelled):
+    if cancelled and cancelled():
+        raise RenderError("Rendering cancelled")
+
+
+def _run(args, cancelled=None):
+    _check(cancelled)
+    try:
+        with subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            try:
+                while True:
+                    _check(cancelled)
+                    try:
+                        out, err = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                if process.returncode:
+                    raise RenderError(err.decode(errors="replace")[-3000:])
+                return out
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+    except OSError as exc:
+        raise RenderError(f"Media process failed: {exc}") from exc
+
+
+def _probe(source, cancelled=None):
+    try:
+        data = json.loads(
+            _run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_format",
+                    "-of",
+                    "json",
+                    str(Path(source).resolve(strict=True)),
+                ],
+                cancelled,
+            )
+        )
+        video = next(s for s in data["streams"] if s["codec_type"] == "video")
+        duration = float(video.get("duration", data["format"].get("duration")))
+        rate = float(Fraction(video.get("avg_frame_rate", "0/1")))
+        if not math.isfinite(duration) or duration <= 0 or rate <= 0:
+            raise ValueError("Invalid duration or frame rate")
+        sar = video.get("sample_aspect_ratio", "1:1")
+        aspect = float(Fraction(sar.replace(":", "/"))) if sar != "N/A" else 1
+        return {
+            "duration": duration,
+            "width": int(video["width"]),
+            "height": int(video["height"]),
+            "fps": rate,
+            "has_audio": any(s["codec_type"] == "audio" for s in data["streams"]),
+            "sample_aspect_ratio": aspect or 1,
+        }
+    except (OSError, ValueError, KeyError, StopIteration, ZeroDivisionError) as exc:
+        raise RenderError(f"Cannot probe media: {exc}") from exc
+
+
+def probe_media(source: Path) -> dict:
+    """Read video dimensions, duration, frame rate and audio presence with ffprobe."""
+    return _probe(source)
+
+
+def validate_plan(
+    events: list[dict],
+    drawings: list[dict],
+    media: dict,
+    *,
+    width: int | None = None,
+    fps: float | None = None,
+) -> None:
+    """Validate the exact renderer schema before review, without encoding or file writes."""
+    _validate(events, drawings, media, width, fps)
+
+
+def _render_reel(
+    source: Path,
+    events: list[dict],
+    drawings: list[dict],
+    destination: Path,
+    *,
+    width: int | None = None,
+    fps: float | None = None,
+    cancelled=None,
+) -> dict:
+    """Encode independent chronological clips and publish an editable drawing sidecar."""
+    import os
+    import shutil
+    import tempfile
+
+    info = _probe(source, cancelled)
+    validate_plan(events, drawings, info, width=width, fps=fps)
+    source = Path(source).resolve()
+    destination = Path(destination).absolute()
+    sidecar = destination.with_suffix(".drawings.json")
+    if destination.exists() or sidecar.exists():
+        raise RenderError("Output or drawing sidecar already exists")
+    rate = fps if fps is not None else info["fps"]
+    out_width = (
+        width
+        if width is not None
+        else info["width"] * max(1, info["sample_aspect_ratio"])
+    )
+    out_width = max(2, round(out_width / 2) * 2)
+    out_height = max(
+        2,
+        round(
+            out_width
+            * info["height"]
+            / (info["width"] * info["sample_aspect_ratio"])
+            / 2
+        )
+        * 2,
+    )
+    clips = []
+    count = 0
+    with tempfile.TemporaryDirectory(
+        prefix="once-render-", dir=destination.parent
+    ) as work:
+        work = Path(work)
+        for index, event in enumerate(sorted(events, key=lambda e: e["start_seconds"])):
+            start, end = event["start_seconds"], event["end_seconds"]
+            frames = max(1, math.ceil((end - start) * rate - 1e-9))
+            hold_mark = next(
+                (
+                    mark
+                    for mark in drawings
+                    if mark["event_id"] == event["event_id"] and "hold_seconds" in mark
+                ),
+                None,
+            )
+            hold_frame = None
+            hold_frames = 0
+            if hold_mark is not None:
+                hold_frame = math.ceil(
+                    (hold_mark["start_seconds"] - start) * rate - 1e-9
+                )
+                hold_frames = max(1, round(hold_mark["hold_seconds"] * rate))
+            speed_mark = next(
+                (
+                    mark
+                    for mark in drawings
+                    if mark["event_id"] == event["event_id"] and mark["kind"] == "speed"
+                ),
+                None,
+            )
+            speed_first = speed_last = None
+            speed_repeat = 1
+            speed_step = 1
+            if speed_mark is not None:
+                speed_first = math.ceil(
+                    (speed_mark["start_seconds"] - start) * rate - 1e-9
+                )
+                speed_last = min(
+                    frames,
+                    math.ceil((speed_mark["end_seconds"] - start) * rate - 1e-9),
+                )
+                if speed_mark["speed"] < 1:
+                    speed_repeat = round(1 / speed_mark["speed"])
+                else:
+                    speed_step = round(speed_mark["speed"])
+            clip_start_count = count
+            speed_output_start = speed_output_frames = 0
+            hold_reel_start_count = None
+            # Include the frame spanning the start, including subframe tail clips.
+            seek = max(0, start - 1 / info["fps"])
+            lead = start - seek
+            folder = work / str(index)
+            folder.mkdir()
+            _run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-nostdin",
+                    "-ss",
+                    str(seek),
+                    "-t",
+                    str(end - seek),
+                    "-i",
+                    str(source),
+                    "-vf",
+                    (
+                        f"tpad=stop_mode=clone:stop_duration={lead + 1 / rate},"
+                        f"fps={rate}:start_time={lead},setpts=PTS-STARTPTS,"
+                        f"scale={out_width}:{out_height},setsar=1"
+                    ),
+                    "-frames:v",
+                    str(frames),
+                    "-compression_level",
+                    "1",
+                    str(folder / "%08d.png"),
+                ],
+                cancelled,
+            )
+            paths = sorted(folder.glob("*.png"))
+            if len(paths) != frames:
+                raise RenderError("Source did not yield the expected frame count")
+            for frame_index, path in enumerate(paths):
+                _check(cancelled)
+                in_speed = (
+                    speed_mark is not None and speed_first <= frame_index < speed_last
+                )
+                if in_speed and (frame_index - speed_first) % speed_step:
+                    continue
+                _paint(path, event, drawings, start + frame_index / rate)
+                if in_speed and frame_index == speed_first:
+                    speed_output_start = count - clip_start_count
+                painted = work / f"frame-{count:08d}.png"
+                path.rename(painted)
+                count += 1
+                if in_speed:
+                    speed_output_frames += 1
+                    for _ in range(speed_repeat - 1):
+                        _check(cancelled)
+                        shutil.copyfile(painted, work / f"frame-{count:08d}.png")
+                        count += 1
+                        speed_output_frames += 1
+                if frame_index == hold_frame:
+                    hold_reel_start_count = count
+                    for _ in range(hold_frames):
+                        _check(cancelled)
+                        shutil.copyfile(painted, work / f"frame-{count:08d}.png")
+                        count += 1
+            clip = {
+                "event_id": event["event_id"],
+                "source_start_seconds": start,
+                "source_end_seconds": end,
+                "reel_start_seconds": clip_start_count / rate,
+                "reel_end_seconds": count / rate,
+                "frame_count": count - clip_start_count,
+            }
+            if hold_mark is not None:
+                source_seconds = start + hold_frame / rate
+                hold_reel_start = hold_reel_start_count / rate
+                hold_reel_end = hold_reel_start + hold_frames / rate
+                clip["hold"] = {
+                    "drawing_id": hold_mark["id"],
+                    "source_seconds": source_seconds,
+                    "hold_seconds": hold_frames / rate,
+                    "reel_start_seconds": hold_reel_start,
+                    "reel_end_seconds": hold_reel_end,
+                    "frame_count": hold_frames,
+                }
+            if speed_mark is not None:
+                speed_source_start = start + speed_first / rate
+                clip["speed"] = {
+                    "drawing_id": speed_mark["id"],
+                    "source_start_seconds": speed_source_start,
+                    "source_end_seconds": start + speed_last / rate,
+                    "speed": speed_mark["speed"],
+                    "output_frames": speed_output_frames,
+                    "reel_start_seconds": (clip_start_count + speed_output_start)
+                    / rate,
+                    "reel_end_seconds": (
+                        clip_start_count + speed_output_start + speed_output_frames
+                    )
+                    / rate,
+                }
+            clips.append(clip)
+
+        encoded = work / "encoded.mp4"
+        args = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-nostdin",
+            "-framerate",
+            str(rate),
+            "-i",
+            str(work / "frame-%08d.png"),
+        ]
+        if info["has_audio"]:
+            args += ["-i", str(source)]
+            filters = []
+            if any("hold" in clip or "speed" in clip for clip in clips):
+                audio_format = (
+                    "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+                )
+                for i, clip in enumerate(clips):
+                    cuts = []
+                    if "hold" in clip:
+                        hold = clip["hold"]
+                        cuts.append((hold["source_seconds"], 0.0, hold["hold_seconds"]))
+                    if "speed" in clip:
+                        speed = clip["speed"]
+                        cuts.append(
+                            (
+                                speed["source_start_seconds"],
+                                speed["source_end_seconds"]
+                                - speed["source_start_seconds"],
+                                speed["output_frames"] / rate,
+                            )
+                        )
+                    cuts.sort()
+                    segments = []
+                    cursor = clip["source_start_seconds"]
+                    for n, (position, length, silence) in enumerate(cuts):
+                        if position > cursor:
+                            label = f"pre{i}x{n}"
+                            filters.append(
+                                f"[1:a:0]atrim=start={cursor}:end={position},"
+                                f"asetpts=PTS-STARTPTS,apad,"
+                                f"atrim=duration={position - cursor},"
+                                f"{audio_format}[{label}]"
+                            )
+                            segments.append(f"[{label}]")
+                        label = f"silence{i}x{n}"
+                        filters.append(
+                            f"anullsrc=r=48000:cl=stereo,atrim=duration={silence},"
+                            f"asetpts=PTS-STARTPTS,{audio_format}[{label}]"
+                        )
+                        segments.append(f"[{label}]")
+                        cursor = position + length
+                    if cursor < clip["source_end_seconds"]:
+                        label = f"post{i}"
+                        filters.append(
+                            f"[1:a:0]atrim=start={cursor}:"
+                            f"end={clip['source_end_seconds']},asetpts=PTS-STARTPTS,"
+                            f"apad,atrim=duration={clip['source_end_seconds'] - cursor},"
+                            f"{audio_format}[{label}]"
+                        )
+                        segments.append(f"[{label}]")
+                    filters.append(
+                        "".join(segments)
+                        + f"concat=n={len(segments)}:v=0:a=1[joined{i}]"
+                    )
+                    filters.append(
+                        f"[joined{i}]apad,"
+                        f"atrim=duration={clip['frame_count'] / rate},"
+                        f"{audio_format}[a{i}]"
+                    )
+            else:
+                for i, clip in enumerate(clips):
+                    filters.append(
+                        f"[1:a:0]atrim=start={clip['source_start_seconds']}:"
+                        f"end={clip['source_end_seconds']},asetpts=PTS-STARTPTS,"
+                        f"apad,atrim=duration={clip['frame_count'] / rate}[a{i}]"
+                    )
+            filters.append(
+                "".join(f"[a{i}]" for i in range(len(clips)))
+                + f"concat=n={len(clips)}:v=0:a=1[audio]"
+            )
+            args += [
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                "0:v:0",
+                "-map",
+                "[audio]",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+            ]
+        args += [
+            "-c:v",
+            "libx264",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-frames:v",
+            str(count),
+            "-movflags",
+            "+faststart",
+            str(encoded),
+        ]
+        _run(args, cancelled)
+        output = _probe(encoded, cancelled)
+        _run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-nostdin",
+                "-i",
+                str(encoded),
+                "-f",
+                "null",
+                "-",
+            ],
+            cancelled,
+        )
+        verified = json.loads(
+            _run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-count_frames",
+                    "-show_entries",
+                    "stream=nb_read_frames,codec_name,pix_fmt",
+                    "-of",
+                    "json",
+                    str(encoded),
+                ],
+                cancelled,
+            )
+        )["streams"][0]
+        if int(verified.get("nb_read_frames", -1)) != count:
+            raise RenderError("Encoded frame count differs from the manifest")
+        if (
+            verified.get("codec_name") != "h264"
+            or verified.get("pix_fmt") != "yuv420p"
+            or output["width"] != out_width
+            or output["height"] != out_height
+            or abs(output["fps"] - rate) > 0.001
+            or output["has_audio"] != info["has_audio"]
+        ):
+            raise RenderError("Encoded format differs from the requested output")
+        output["frame_count"] = count
+        manifest = {
+            "source": str(source),
+            "destination": str(destination),
+            "semantics": "custom-render-only",
+            "clips": clips,
+            "output": output,
+            "drawings_sidecar": str(sidecar),
+        }
+        editable = work / "drawings.json"
+        editable.write_text(
+            json.dumps(
+                {
+                    "semantics": "custom-render-only",
+                    "drawings": drawings,
+                    "manifest": manifest,
+                },
+                indent=2,
+            )
+        )
+        _check(cancelled)
+        # Hard links publish complete files without replacing a concurrent writer.
+        # Stage in the destination filesystem to support a separate TMPDIR mount.
+        staged = []
+        published = []
+        warnings = []
+        try:
+            for target, contents in [(sidecar, editable), (destination, encoded)]:
+                with tempfile.NamedTemporaryFile(
+                    dir=destination.parent, prefix=".once-", delete=False
+                ) as handle:
+                    stage = Path(handle.name)
+                    staged.append(stage)
+                    with contents.open("rb") as reader:
+                        import shutil
+
+                        shutil.copyfileobj(reader, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                _check(cancelled)
+                owned = stage.stat()
+                os.link(stage, target)
+                published.append((target, owned.st_dev, owned.st_ino))
+        except BaseException:
+            for target, device, inode in published:
+                try:
+                    current = target.lstat()
+                    if (current.st_dev, current.st_ino) == (device, inode):
+                        target.unlink()
+                except OSError:
+                    # Preserve the original publication failure; never remove a replacement.
+                    pass
+            raise
+        finally:
+            for stage in staged:
+                try:
+                    stage.unlink(missing_ok=True)
+                except OSError:
+                    warnings.append("Private publication staging cleanup is pending")
+        if warnings:
+            manifest["warnings"] = warnings
+        return manifest
+
+
+def _positions(mark, time):
+    keys = mark.get("keyframes", [])
+    if not keys:
+        return mark["points"]
+    if time <= keys[0]["time_seconds"]:
+        return keys[0]["points"]
+    for left, right in itertools.pairwise(keys):
+        if time < right["time_seconds"]:
+            mix = (time - left["time_seconds"]) / (
+                right["time_seconds"] - left["time_seconds"]
+            )
+            return [
+                [a + (b - a) * mix for a, b in zip(p, q)]
+                for p, q in zip(left["points"], right["points"])
+            ]
+    return keys[-1]["points"]
+
+
+_OVERLAY_CACHE = [None, None]
+
+
+def _paint(path, event, drawings, time):
+    from PIL import Image, ImageDraw, ImageFont
+
+    with Image.open(path) as source:
+        base = source.convert("RGB")
+    width, height = base.size
+    # Supersample 3x for SD/HD-ready sizes, 2x above 720p to bound memory/time.
+    scale = 3 if height <= 720 else 2
+    layer = Image.new("RGBA", (width * scale, height * scale))
+    marks_pen = pen = ImageDraw.Draw(layer)
+    stroke = max(2, height / 200) * scale
+    halo = "#101B23"
+    font = ImageFont.truetype("DejaVuSans.ttf", max(11, round(height / 32)) * scale)
+
+    def label(text, anchor, title=False, color="#F6F4EC", pen=None):
+        pen = pen or marks_pen
+        # Wrap long labels so both text and padding stay within the frame.
+        max_width = width * scale - 16 * scale
+        safe_height = (
+            height * scale
+            if title
+            else max(
+                18 * scale, height * scale - max(40 * scale, font.size + 18 * scale)
+            )
+        )
+        words = text.split()
+        lines = []
+        line = ""
+        for word in words:
+            for char in word + " ":
+                if pen.textlength(line + char, font=font) > max_width - 12 * scale:
+                    lines.append(line.rstrip())
+                    line = ""
+                line += char
+        if line.strip():
+            lines.append(line.rstrip())
+        max_lines = (
+            1
+            if title
+            else max(1, (safe_height - 18 * scale) // (font.size + 2 * scale))
+        )
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            last = lines[-1]
+            while (
+                last and pen.textlength(last + "…", font=font) > max_width - 12 * scale
+            ):
+                last = last[:-1]
+            lines[-1] = last + "…"
+        text = "\n".join(lines)
+        bounds = pen.multiline_textbbox((0, 0), text, font=font, spacing=scale * 2)
+        bw = bounds[2] - bounds[0] + 12 * scale
+        bh = bounds[3] - bounds[1] + 10 * scale
+        x = max(4 * scale, min(anchor[0], width * scale - bw - 4 * scale))
+        y = max(4 * scale, min(anchor[1], safe_height - bh - 4 * scale))
+        pen.rounded_rectangle(
+            (x, y, x + bw, y + bh), radius=4 * scale, fill=(12, 22, 30, 225)
+        )
+        pen.multiline_text(
+            (x + 6 * scale - bounds[0], y + 5 * scale - bounds[1]),
+            text,
+            font=font,
+            fill=color,
+            spacing=2 * scale,
+        )
+
+    active = [
+        mark
+        for mark in drawings
+        if mark["event_id"] == event["event_id"]
+        and mark["kind"] != "speed"
+        and mark["start_seconds"] <= time < mark["end_seconds"]
+    ]
+    key = None
+    if active:
+        key = (
+            width,
+            height,
+            tuple(
+                (
+                    tuple(
+                        sorted(
+                            (k, repr(v))
+                            for k, v in mark.items()
+                            if k not in ("keyframes", "points")
+                        )
+                    ),
+                    tuple(map(tuple, _positions(mark, time))),
+                    int(max(0, time - mark["start_seconds"]) * 10)
+                    if mark["kind"] == "stopwatch"
+                    else None,
+                )
+                for mark in active
+            ),
+        )
+    overlay = None
+    if key is not None and _OVERLAY_CACHE[0] == key:
+        overlay = _OVERLAY_CACHE[1]
+    elif key is not None:
+        for mark in drawings:
+            if mark["event_id"] != event["event_id"] or not (
+                mark["start_seconds"] <= time < mark["end_seconds"]
+            ):
+                continue
+            if mark["kind"] == "speed":
+                continue
+            pts = [
+                (x * width * scale, y * height * scale)
+                for x, y in _positions(mark, time)
+            ]
+            kind = mark["kind"]
+            color = mark.get(
+                "color", {"line": "#6DE0D4", "label": "#FFFFFF"}.get(kind, "#FFD166")
+            )
+            if kind == "curve":
+                start, control, end = pts
+                pts = [
+                    (
+                        (1 - t) ** 2 * start[0]
+                        + 2 * (1 - t) * t * control[0]
+                        + t**2 * end[0],
+                        (1 - t) ** 2 * start[1]
+                        + 2 * (1 - t) * t * control[1]
+                        + t**2 * end[1],
+                    )
+                    for index in range(33)
+                    for t in [index / 32]
+                ]
+            if kind == "stopwatch":
+                elapsed = max(0, time - mark["start_seconds"])
+                minutes = int(elapsed // 60)
+                text = f"{minutes}:{elapsed % 60:04.1f}"
+                if mark.get("text"):
+                    text = f"{mark['text']} {text}"
+                label(text, pts[0], color=color)
+                continue
+            if kind == "label":
+                label(mark["text"], pts[0], color=color)
+                continue
+            if kind == "area":
+                fill_layer = Image.new("RGBA", layer.size)
+                rgb = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
+                ImageDraw.Draw(fill_layer).polygon(
+                    pts, fill=(*rgb, round(255 * mark.get("opacity", 0.25)))
+                )
+                layer = Image.alpha_composite(layer, fill_layer)
+                pen = ImageDraw.Draw(layer)
+                outline = pts + [pts[0]]
+                pen.line(
+                    outline, fill=halo, width=round(stroke + 3 * scale), joint="curve"
+                )
+                pen.line(outline, fill=color, width=round(stroke), joint="curve")
+            elif kind == "spotlight":
+                (cx, cy), (rx, ry) = pts
+                box = (cx - rx, cy - ry, cx + rx, cy + ry)
+                rgb = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
+                glow = Image.new("RGBA", layer.size)
+                glow_pen = ImageDraw.Draw(glow)
+                style = mark.get("style", "ground")
+                if style == "ground":
+                    for expansion, alpha in ((6 * scale, 16), (3 * scale, 28)):
+                        glow_pen.ellipse(
+                            (
+                                box[0] - expansion,
+                                box[1] - expansion,
+                                box[2] + expansion,
+                                box[3] + expansion,
+                            ),
+                            outline=(*rgb, alpha),
+                            width=2 * scale,
+                        )
+                    glow_pen.ellipse(box, fill=(*rgb, 64))
+                else:
+                    for expansion, alpha in ((6 * scale, 18), (3 * scale, 32), (0, 50)):
+                        glow_pen.ellipse(
+                            (
+                                box[0] - expansion,
+                                box[1] - expansion,
+                                box[2] + expansion,
+                                box[3] + expansion,
+                            ),
+                            outline=(*rgb, alpha),
+                            width=max(scale, round(stroke + expansion / 3)),
+                        )
+                layer = Image.alpha_composite(layer, glow)
+                pen = ImageDraw.Draw(layer)
+                pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
+                pen.ellipse(box, outline=color, width=round(stroke))
+            elif kind == "ellipse":
+                (cx, cy), (rx, ry) = pts
+                box = (cx - rx, cy - ry, cx + rx, cy + ry)
+                pen.ellipse(box, outline=halo, width=round(stroke + 3 * scale))
+                pen.ellipse(box, outline=color, width=round(stroke))
+            else:
+                line = pts + [pts[0]] if kind == "polygon" else pts
+                pen.line(
+                    line, fill=halo, width=round(stroke + 3 * scale), joint="curve"
+                )
+                pen.line(line, fill=color, width=round(stroke), joint="curve")
+                if kind in ("arrow", "curve") or (
+                    kind == "polyline" and mark.get("arrow", False)
+                ):
+                    a, b = pts[-2], pts[-1]
+                    angle = math.atan2(b[1] - a[1], b[0] - a[0])
+                    length = max(9, height / 20) * scale
+                    head = [
+                        b,
+                        (
+                            b[0] - length * math.cos(angle - 0.45),
+                            b[1] - length * math.sin(angle - 0.45),
+                        ),
+                        (
+                            b[0] - length * math.cos(angle + 0.45),
+                            b[1] - length * math.sin(angle + 0.45),
+                        ),
+                    ]
+                    pen.polygon(head, fill=color)
+                    pen.line(head + [b], fill=halo, width=scale)
+            if mark.get("text"):
+                label(mark["text"], pts[0], color=color)
+        overlay = layer.resize(base.size, Image.Resampling.LANCZOS)
+        _OVERLAY_CACHE[:] = [key, overlay]
+    if overlay is not None:
+        base = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
+    title = " · ".join(str(event.get(k, "")) for k in ("team", "phase", "action"))
+    strip = min(height, 120)
+    top = height - strip
+    footer = Image.new("RGBA", (width * scale, strip * scale))
+    label(
+        f"{time:.2f}s   |   {title}",
+        (8 * scale, (height - 32 - top) * scale),
+        True,
+        pen=ImageDraw.Draw(footer),
+    )
+    small = footer.resize((width, strip), Image.Resampling.LANCZOS)
+    region = base.crop((0, top, width, height)).convert("RGBA")
+    base.paste(Image.alpha_composite(region, small).convert("RGB"), (0, top))
+    base.save(path, compress_level=1)
+
+
+def _number(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _validate(events, drawings, info, width, fps):
+    import re
+
+    if width is not None and (type(width) is not int or width < 2):
+        raise RenderError("Width must be an integer of at least two pixels")
+    if fps is not None and (not _number(fps) or fps <= 0 or fps > 240):
+        raise RenderError("Frame rate must be finite and in (0, 240]")
+    if not isinstance(events, list) or not events:
+        raise RenderError("At least one event is required")
+    owners = {}
+    for event in events:
+        if not isinstance(event, dict):
+            raise RenderError("Events must be objects")
+        identifier = event.get("event_id")
+        start, end = event.get("start_seconds"), event.get("end_seconds")
+        if not isinstance(identifier, str) or not identifier or identifier in owners:
+            raise RenderError("Event IDs must be nonempty and unique")
+        if not (
+            _number(start) and _number(end) and 0 <= start < end <= info["duration"]
+        ):
+            raise RenderError(
+                "Event range must have positive duration within the media"
+            )
+        for key in ("team", "phase", "action"):
+            if not isinstance(event.get(key), str) or len(event[key]) > 100:
+                raise RenderError(f"Event {key} must be text of at most 100 characters")
+        owners[identifier] = event
+    if not isinstance(drawings, list):
+        raise RenderError("Drawings must be a list")
+    ids = set()
+    allowed = {
+        "id",
+        "event_id",
+        "kind",
+        "start_seconds",
+        "end_seconds",
+        "points",
+        "color",
+        "text",
+        "keyframes",
+        "hold_seconds",
+        "speed",
+        "arrow",
+        "opacity",
+        "style",
+    }
+    hold_owners = set()
+    speed_owners = set()
+    speed_spans = {}
+    hold_starts = {}
+
+    def points(value, kind, count=None):
+        if kind == "speed":
+            if value != []:
+                raise RenderError("Speed drawings must have an empty points list")
+            return
+        if not isinstance(value, list) or not value:
+            raise RenderError("Drawing points must be a nonempty list")
+        expected = {
+            "ellipse": 2,
+            "arrow": 2,
+            "line": 2,
+            "label": 1,
+            "curve": 3,
+            "spotlight": 2,
+            "stopwatch": 1,
+        }.get(kind)
+        if (
+            (expected and len(value) != expected)
+            or (kind == "polygon" and len(value) < 3)
+            or (kind == "area" and not 3 <= len(value) <= 32)
+            or (kind == "polyline" and not 2 <= len(value) <= 32)
+        ):
+            raise RenderError("Wrong point topology")
+        if count is not None and len(value) != count:
+            raise RenderError("Tracked points must match the drawing topology")
+        for pair in value:
+            if (
+                not isinstance(pair, list)
+                or len(pair) != 2
+                or not all(_number(v) and 0 <= v <= 1 for v in pair)
+            ):
+                raise RenderError("Coordinates must be finite normalized pairs")
+        if kind in ("ellipse", "spotlight") and not all(v > 0 for v in value[1]):
+            raise RenderError("Ellipse radii must be positive")
+
+    for mark in drawings:
+        if not isinstance(mark, dict) or set(mark) - allowed:
+            raise RenderError("Unknown drawing keys")
+        identifier = mark.get("id")
+        if not isinstance(identifier, str) or not identifier or identifier in ids:
+            raise RenderError("Drawing IDs must be nonempty and unique")
+        ids.add(identifier)
+        owner = mark.get("event_id")
+        if not isinstance(owner, str) or owner not in owners:
+            raise RenderError("Drawing must belong to an existing event")
+        kind = mark.get("kind")
+        if kind not in (
+            "ellipse",
+            "arrow",
+            "line",
+            "polygon",
+            "label",
+            "polyline",
+            "curve",
+            "area",
+            "spotlight",
+            "stopwatch",
+            "speed",
+        ):
+            raise RenderError("Unknown drawing kind")
+        if "speed" in mark and kind != "speed":
+            raise RenderError("speed is only valid for speed drawings")
+        if kind == "speed":
+            value = mark.get("speed")
+            if not _number(value) or value not in (0.25, 0.5, 2, 4):
+                raise RenderError("speed must be one of 0.25, 0.5, 2, or 4")
+            if owner in speed_owners:
+                raise RenderError("At most one speed segment is allowed per event")
+            speed_owners.add(owner)
+        start, end = mark.get("start_seconds"), mark.get("end_seconds")
+        event = owners[owner]
+        if not (
+            _number(start)
+            and _number(end)
+            and event["start_seconds"] <= start < end <= event["end_seconds"]
+        ):
+            raise RenderError("Drawing display interval must lie within its event")
+        if "hold_seconds" in mark:
+            hold_seconds = mark["hold_seconds"]
+            if not _number(hold_seconds) or not 0 < hold_seconds <= 10:
+                raise RenderError("hold_seconds must be a finite number in (0, 10]")
+            if owner in hold_owners:
+                raise RenderError("At most one hold is allowed per event")
+            rate = fps if fps is not None else info["fps"]
+            frames = max(
+                1,
+                math.ceil(
+                    (event["end_seconds"] - event["start_seconds"]) * rate - 1e-9
+                ),
+            )
+            hold_frame = math.ceil((start - event["start_seconds"]) * rate - 1e-9)
+            hold_time = event["start_seconds"] + hold_frame / rate
+            if hold_frame >= frames or not hold_time < end:
+                raise RenderError(
+                    "Hold must land on a displayed frame within its drawing interval"
+                )
+            hold_owners.add(owner)
+        if kind == "speed":
+            speed_spans[owner] = (start, end)
+        if "hold_seconds" in mark:
+            hold_starts[owner] = start
+        if "arrow" in mark and (
+            kind != "polyline" or not isinstance(mark["arrow"], bool)
+        ):
+            raise RenderError("arrow must be a boolean used only with polyline")
+        if "opacity" in mark and (
+            kind != "area"
+            or not _number(mark["opacity"])
+            or not 0.05 <= mark["opacity"] <= 0.8
+        ):
+            raise RenderError("Area opacity must be a number in [0.05, 0.8]")
+        if "style" in mark and (
+            kind != "spotlight" or mark["style"] not in ("halo", "ground")
+        ):
+            raise RenderError("Spotlight style must be 'halo' or 'ground'")
+        points(mark.get("points"), kind)
+        if "color" in mark and (
+            not isinstance(mark["color"], str)
+            or not re.fullmatch(r"#[0-9a-fA-F]{6}", mark["color"])
+        ):
+            raise RenderError("Color must be #RRGGBB")
+        if "text" in mark or kind == "label":
+            text = mark.get("text")
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or len(text) > 120
+                or any(ord(c) < 32 for c in text)
+            ):
+                raise RenderError("Drawing text must be a short nonempty single line")
+        keys = mark.get("keyframes", [])
+        if not isinstance(keys, list):
+            raise RenderError("Keyframes must be a list")
+        previous = -math.inf
+        for key in keys:
+            if not isinstance(key, dict) or set(key) != {"time_seconds", "points"}:
+                raise RenderError("Invalid keyframe keys")
+            time = key["time_seconds"]
+            if not _number(time) or not start <= time <= end or time <= previous:
+                raise RenderError(
+                    "Keyframes must be ordered within the display interval"
+                )
+            points(key["points"], kind, len(mark["points"]))
+            previous = time
+
+    for owner, hold_start in hold_starts.items():
+        span = speed_spans.get(owner)
+        if span is not None and span[0] <= hold_start < span[1]:
+            raise RenderError("A hold cannot start inside a speed segment")
+
+
+def render_reel(
+    source: Path,
+    events: list[dict],
+    drawings: list[dict],
+    destination: Path,
+    *,
+    width: int | None = None,
+    fps: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> dict:
+    """Render custom telestration; never replace an existing output or sidecar.
+
+    Each clip uses ceil(duration * fps) frames. The last source frame may be
+    held for less than one output frame; manifest offsets use encoded time.
+    Temporary frames respect the caller's TMPDIR.
+    """
+    try:
+        return _render_reel(
+            source,
+            events,
+            drawings,
+            destination,
+            width=width,
+            fps=fps,
+            cancelled=cancelled,
+        )
+    except (OSError, ValueError) as exc:
+        raise RenderError(f"Rendering failed: {exc}") from exc

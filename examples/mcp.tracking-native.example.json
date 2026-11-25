@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "once-sport": {
+      "command": "/absolute/path/to/once-sport-mcp/.venv/bin/once-sport-mcp",
+      "args": [],
+      "env": {
+        "ONCE_SPORT_OUTPUT_DIR": "/absolute/path/to/dedicated-output",
+        "ONCE_SPORT_WORKSPACE": "/absolute/path/to/dedicated-workspace",
+        "ONCE_SPORT_ALLOWED_SOURCE_DIRS": "[\"/absolute/path/to/permitted-source\"]",
+        "ONCE_SPORT_NATIVE_EXECUTABLE": "/absolute/path/to/Once Sport.app/OnceSport",
+        "ONCE_SPORT_TRACKING_ENABLED": "1"
+      }
+    }
+  }
+}
