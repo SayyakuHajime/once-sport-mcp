@@ -187,7 +187,7 @@ def _render(tmp_path, drawings):
     return out, manifest
 
 
-def test_slow_motion_duplicates_frames_and_silences_audio(tmp_path):
+def test_slow_motion_duplicates_frames_and_stretches_audio(tmp_path):
     out, manifest = _render(tmp_path, [_speed(0.5)])
     clip = manifest["clips"][0]
     assert clip["frame_count"] == 40
@@ -203,9 +203,21 @@ def test_slow_motion_duplicates_frames_and_silences_audio(tmp_path):
         assert diff(frames[k], frames[k + 1]) < 1.0
     assert diff(frames[11], frames[12]) > 2.0
     pcm = _pcm(out)
-    assert _rms(pcm[int(1.2 * 48000) : int(2.8 * 48000)]) < 5
+    inside = pcm[int(1.3 * 48000) : int(2.7 * 48000)]
+    assert _rms(inside) > 500
+
+    def crossings_per_second(values):
+        import itertools
+
+        flips = sum(1 for a, b in itertools.pairwise(values) if (a < 0) != (b < 0))
+        return flips / (len(values) / 48000)
+
+    outside = pcm[int(0.2 * 48000) : int(0.8 * 48000)]
+    ratio = crossings_per_second(inside) / crossings_per_second(outside)
+    assert 0.9 < ratio < 1.1  # tempo change keeps the pitch
     assert _rms(pcm[int(0.2 * 48000) : int(0.8 * 48000)]) > 500
-    assert _rms(pcm[int(3.2 * 48000) : int(3.8 * 48000)]) > 500
+    assert _rms(pcm[int(3.2 * 48000) : int(3.8 * 48000)]) > 150  # audible
+    assert max(abs(v) for v in pcm) < 0.1 * 32768 * 1.15  # limiter ceiling
     assert abs(len(pcm) / 48000 - 4.0) < 0.1
 
 

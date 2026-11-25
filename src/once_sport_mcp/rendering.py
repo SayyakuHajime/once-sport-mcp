@@ -307,7 +307,9 @@ def _render_reel(
                     cuts = []
                     if "hold" in clip:
                         hold = clip["hold"]
-                        cuts.append((hold["source_seconds"], 0.0, hold["hold_seconds"]))
+                        cuts.append(
+                            (hold["source_seconds"], 0.0, hold["hold_seconds"], None)
+                        )
                     if "speed" in clip:
                         speed = clip["speed"]
                         cuts.append(
@@ -316,12 +318,14 @@ def _render_reel(
                                 speed["source_end_seconds"]
                                 - speed["source_start_seconds"],
                                 speed["output_frames"] / rate,
+                                speed["speed"],
                             )
                         )
                     cuts.sort()
                     segments = []
                     cursor = clip["source_start_seconds"]
-                    for n, (position, length, silence) in enumerate(cuts):
+                    after_speed = False
+                    for n, (position, length, silence, factor) in enumerate(cuts):
                         if position > cursor:
                             label = f"pre{i}x{n}"
                             filters.append(
@@ -332,10 +336,28 @@ def _render_reel(
                             )
                             segments.append(f"[{label}]")
                         label = f"silence{i}x{n}"
-                        filters.append(
-                            f"anullsrc=r=48000:cl=stereo,atrim=duration={silence},"
-                            f"asetpts=PTS-STARTPTS,{audio_format}[{label}]"
-                        )
+                        if factor is None:
+                            filters.append(
+                                f"anullsrc=r=48000:cl=stereo,atrim=duration={silence},"
+                                f"asetpts=PTS-STARTPTS,{audio_format}[{label}]"
+                            )
+                        else:
+                            # Keep the ambience: stretch (pitch preserved), compress
+                            # the crowd peaks and fade the edges to avoid jumps.
+                            tempo = ",".join(
+                                ["atempo=0.5" if factor < 1 else "atempo=2"]
+                                * (2 if factor in (0.25, 4) else 1)
+                            )
+                            fade = min(0.3, silence / 3)
+                            filters.append(
+                                f"[1:a:0]atrim=start={position}:end={position + length},"
+                                f"asetpts=PTS-STARTPTS,{tempo},apad,"
+                                f"atrim=duration={silence},"
+                                f"acompressor=threshold=0.1:ratio=4:attack=20:release=300,"
+                                f"afade=t=in:d={fade},afade=t=out:st={silence - 0.15}:d=0.15,"
+                                f"{audio_format}[{label}]"
+                            )
+                        after_speed = factor is not None
                         segments.append(f"[{label}]")
                         cursor = position + length
                     if cursor < clip["source_end_seconds"]:
@@ -344,7 +366,13 @@ def _render_reel(
                             f"[1:a:0]atrim=start={cursor}:"
                             f"end={clip['source_end_seconds']},asetpts=PTS-STARTPTS,"
                             f"apad,atrim=duration={clip['source_end_seconds'] - cursor},"
-                            f"{audio_format}[{label}]"
+                            + (
+                                "acompressor=threshold=0.05:ratio=8:attack=10:release=400,"
+                                "volume=0.5,afade=t=in:d=0.15,"
+                                if after_speed
+                                else ""
+                            )
+                            + f"{audio_format}[{label}]"
                         )
                         segments.append(f"[{label}]")
                     filters.append(
@@ -352,7 +380,14 @@ def _render_reel(
                         + f"concat=n={len(segments)}:v=0:a=1[joined{i}]"
                     )
                     filters.append(
-                        f"[joined{i}]apad,"
+                        f"[joined{i}]"
+                        + (
+                            # Hard ceiling so crowd roars never jump out of the mix.
+                            "alimiter=limit=0.1:level=disabled:attack=2:release=80,"
+                            if "speed" in clip
+                            else ""
+                        )
+                        + f"apad,"
                         f"atrim=duration={clip['frame_count'] / rate},"
                         f"{audio_format}[a{i}]"
                     )
