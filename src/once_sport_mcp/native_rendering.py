@@ -473,6 +473,10 @@ def validate_native_plan(events: list[dict], drawings: list[dict], media: dict) 
             raise rendering.RenderError(
                 "Native Once export supports arrows and ellipses only"
             )
+        if mark.get("stabilize") or mark.get("ground"):
+            raise rendering.RenderError(
+                "Native Once export does not support stabilize or ground masking"
+            )
         if "dash" in mark and mark.get("dash"):
             raise rendering.RenderError(
                 "Native Once export does not support dashed arrows"

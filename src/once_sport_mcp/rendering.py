@@ -117,6 +117,9 @@ def _render_reel(
     info = _probe(source, cancelled)
     validate_plan(events, drawings, info, width=width, fps=fps)
     source = Path(source).resolve()
+    drawings, stabilize_reports = _resolve_stabilize(
+        source, events, drawings, cancelled
+    )
     destination = Path(destination).absolute()
     sidecar = destination.with_suffix(".drawings.json")
     if destination.exists() or sidecar.exists():
@@ -140,7 +143,7 @@ def _render_reel(
     )
     clips = []
     count = 0
-    overlay_cache = [None, None]
+    overlay_cache = {"rest": [None, None], "ground": [None, None]}
     with tempfile.TemporaryDirectory(
         prefix="once-render-", dir=destination.parent
     ) as work:
@@ -230,7 +233,9 @@ def _render_reel(
                 )
                 if in_speed and (frame_index - speed_first) % speed_step:
                     continue
-                _paint(path, event, drawings, start + frame_index / rate, overlay_cache)
+                _paint_frame(
+                    path, event, drawings, start + frame_index / rate, overlay_cache
+                )
                 if in_speed and frame_index == speed_first:
                     speed_output_start = count - clip_start_count
                 painted = work / f"frame-{count:08d}.png"
@@ -491,6 +496,8 @@ def _render_reel(
             "output": output,
             "drawings_sidecar": str(sidecar),
         }
+        if stabilize_reports:
+            manifest["stabilize"] = stabilize_reports
         editable = work / "drawings.json"
         editable.write_text(
             json.dumps(
@@ -666,6 +673,70 @@ def _arrow_head(path, length, spread=0.42):
     return [tip, wings[0], notch, wings[1]], notch
 
 
+STABILIZE_KINDS = frozenset(
+    {"area", "line", "arrow", "polyline", "curve", "polygon", "label", "nametag"}
+)
+GROUND_KINDS = frozenset(
+    {"area", "line", "arrow", "polyline", "curve", "polygon", "ellipse", "spotlight"}
+)
+
+
+def _resolve_stabilize(source, events, drawings, cancelled=None):
+    """Turn `stabilize` drawings into camera-compensated keyframes.
+
+    Motion is estimated once per (event, interval) for all drawings that share
+    it. When the camera tracker stops early (scene cut, points leaving the
+    frame) the drawing ends at the last usable keyframe instead of drifting.
+    """
+    from . import camera
+
+    marks = [m for m in drawings if m.get("stabilize")]
+    if not marks:
+        return drawings, []
+    groups = {}
+    for mark in marks:
+        groups.setdefault(
+            (mark["event_id"], mark["start_seconds"], mark["end_seconds"]), []
+        ).append(mark)
+    resolved, reports = {}, []
+    for (event_id, start, end), members in groups.items():
+        _check(cancelled)
+        points = [p for mark in members for p in mark["points"]]
+        try:
+            result = camera.motion_keyframes(source, start, end, points)
+        except camera.CameraError as exc:
+            raise RenderError(f"Camera stabilization failed: {exc}") from exc
+        keyframes = result["keyframes"]
+        if len(keyframes) < 2:
+            raise RenderError(
+                "Camera stabilization could not follow the pitch "
+                f"({result.get('stopped_reason') or 'too few usable frames'})"
+            )
+        offset = 0
+        for mark in members:
+            count = len(mark["points"])
+            own = [
+                {
+                    "time_seconds": key["time_seconds"],
+                    "points": key["points"][offset : offset + count],
+                }
+                for key in keyframes
+            ]
+            offset += count
+            end_at = min(end, own[-1]["time_seconds"])
+            updated = dict(mark, keyframes=own, end_seconds=end_at)
+            resolved[mark["id"]] = updated
+            reports.append(
+                {
+                    "id": mark["id"],
+                    "frames": result.get("usable_frames"),
+                    "stopped_reason": result.get("stopped_reason"),
+                    "ended_at_seconds": end_at,
+                }
+            )
+    return [resolved.get(mark["id"], mark) for mark in drawings], reports
+
+
 def _drawing_z_tier(kind):
     """Stable painter tiers: background regions first, annotations last."""
     if kind == "area":
@@ -802,7 +873,37 @@ def _with_alpha(image, factor):
     return faded
 
 
-def _paint(path, event, drawings, time, overlay_cache=None):
+def _paint_frame(path, event, drawings, time, overlay_cache):
+    """Paint ground-masked drawings first, then everything else plus the footer."""
+    grounded = [m for m in drawings if m.get("ground")]
+    if not any(
+        m["event_id"] == event["event_id"]
+        and m["start_seconds"] <= time < m["end_seconds"]
+        for m in grounded
+    ):
+        _paint(
+            path,
+            event,
+            [m for m in drawings if not m.get("ground")],
+            time,
+            overlay_cache["rest"],
+        )
+        return
+    _paint(
+        path, event, grounded, time, overlay_cache["ground"], footer=False, ground=True
+    )
+    _paint(
+        path,
+        event,
+        [m for m in drawings if not m.get("ground")],
+        time,
+        overlay_cache["rest"],
+    )
+
+
+def _paint(
+    path, event, drawings, time, overlay_cache=None, *, footer=True, ground=False
+):
     from PIL import Image, ImageDraw
 
     overlay_cache = overlay_cache if overlay_cache is not None else [None, None]
@@ -1142,7 +1243,25 @@ def _paint(path, event, drawings, time, overlay_cache=None):
     if overlay is not None:
         composite = _with_alpha(overlay, alphas[0]) if uniform_fade else overlay
         if composite is not None:
-            base = Image.alpha_composite(base.convert("RGBA"), composite).convert("RGB")
+            if ground:
+                from . import grassmask
+
+                mask, reliable = grassmask.ground_mask(base)
+                if reliable:
+                    base = grassmask.apply_ground_layer(
+                        base.convert("RGBA"), composite, mask
+                    ).convert("RGB")
+                else:
+                    base = Image.alpha_composite(
+                        base.convert("RGBA"), composite
+                    ).convert("RGB")
+            else:
+                base = Image.alpha_composite(base.convert("RGBA"), composite).convert(
+                    "RGB"
+                )
+    if not footer:
+        base.save(path, compress_level=1)
+        return
     strip = min(height, 120)
     top = height - strip
     footer = Image.new("RGBA", (width * scale, strip * scale))
@@ -1218,6 +1337,8 @@ def _validate(events, drawings, info, width, fps):
         "fade_in_seconds",
         "fade_out_seconds",
         "easing",
+        "stabilize",
+        "ground",
     }
     hold_owners = set()
     speed_owners = set()
@@ -1405,6 +1526,15 @@ def _validate(events, drawings, info, width, fps):
                 or any(ord(c) < 32 for c in text)
             ):
                 raise RenderError("Drawing text must be a short nonempty single line")
+        for flag, kinds in (("stabilize", STABILIZE_KINDS), ("ground", GROUND_KINDS)):
+            if flag in mark and (
+                type(mark[flag]) is not bool or mark["kind"] not in kinds
+            ):
+                raise RenderError(
+                    f"{flag} must be a boolean used only with {sorted(kinds)}"
+                )
+        if mark.get("stabilize") and mark.get("keyframes"):
+            raise RenderError("A stabilized drawing must not carry keyframes")
         keys = mark.get("keyframes", [])
         if not isinstance(keys, list):
             raise RenderError("Keyframes must be a list")
