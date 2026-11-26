@@ -176,6 +176,7 @@ def _build_parser() -> argparse.ArgumentParser:
     formation.add_argument("--hold-at", type=float)
     formation.add_argument("--hold-seconds", type=float)
     formation.add_argument("--id-prefix", default="formation")
+    formation.add_argument("--trails", type=float, help="trail length in seconds")
     formation.add_argument(
         "--tag",
         action="append",
@@ -300,6 +301,7 @@ def _dispatch(args: argparse.Namespace, workflow: Workflow) -> Any:
             hold_at_seconds=args.hold_at,
             hold_seconds=args.hold_seconds,
             tags=_parse_tags(args.tags),
+            trails=args.trails,
         )
     if args.command == "submit-analysis":
         proposal = _read_proposal(args.proposal)

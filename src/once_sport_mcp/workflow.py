@@ -417,6 +417,7 @@ class Workflow:
         hold_at_seconds=None,
         hold_seconds=None,
         tags=None,
+        trails=None,
     ):
         if not self.tracking_enabled:
             raise WorkflowError(
@@ -512,6 +513,7 @@ class Workflow:
                 hold_at_seconds=hold_at_seconds,
                 hold_seconds=hold_seconds,
                 tags=tags,
+                trails=trails,
             )
         except FormationError as exc:
             raise WorkflowError("invalid_formation", str(exc)) from exc

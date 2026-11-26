@@ -109,6 +109,7 @@ def build_formation(
     hold_at_seconds=None,
     hold_seconds=None,
     tags=None,
+    trails=None,
 ):
     """Compose tracked targets into editable line, ring, and optional label drawings."""
     if not isinstance(results, list) or not 2 <= len(results) <= 11:
@@ -117,6 +118,10 @@ def build_formation(
         )
     if not isinstance(rings, bool):
         raise FormationError("rings must be a boolean")
+    if trails is not None and not (
+        _number(trails) and not isinstance(trails, bool) and 0.3 <= trails <= 10
+    ):
+        raise FormationError("trails must be a number of seconds in [0.3, 10]")
     if tags is not None:
         if (
             not isinstance(tags, list)
@@ -400,6 +405,28 @@ def build_formation(
                 }
             )
 
+    if trails is not None:
+        for index in range(len(results)):
+            keyframes = [
+                {
+                    "time_seconds": time,
+                    "points": [sample_maps[index][frame]["anchor"]],
+                }
+                for frame, time in zip(frame_indices, times, strict=True)
+            ]
+            drawings.append(
+                {
+                    "id": f"{id_prefix}-trail-{index}",
+                    "event_id": event_id,
+                    "kind": "trail",
+                    "start_seconds": start,
+                    "end_seconds": end,
+                    "points": keyframes[0]["points"],
+                    "keyframes": keyframes,
+                    "trail_seconds": float(trails),
+                    "color": color,
+                }
+            )
     for index, tag in enumerate(tags or []):
         if tag is None:
             continue
@@ -490,7 +517,7 @@ def build_formation(
         "action": "Formation",
     }
     # Paint order: area under links, links under rings/spotlights, tags and label on top.
-    layer = {"area": 0, "line": 1, "nametag": 3, "label": 4}
+    layer = {"area": 0, "line": 1, "trail": 1, "nametag": 3, "label": 4}
     drawings.sort(key=lambda mark: layer.get(mark["kind"], 2))
     try:
         rendering.validate_plan([event], drawings, media)

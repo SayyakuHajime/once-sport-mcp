@@ -151,21 +151,20 @@ def _render_reel(
         for index, event in enumerate(sorted(events, key=lambda e: e["start_seconds"])):
             start, end = event["start_seconds"], event["end_seconds"]
             frames = max(1, math.ceil((end - start) * rate - 1e-9))
-            hold_mark = next(
+            hold_plan = {}  # source frame index -> (drawing, repeated frame count)
+            for mark in sorted(
                 (
-                    mark
-                    for mark in drawings
-                    if mark["event_id"] == event["event_id"] and "hold_seconds" in mark
+                    m
+                    for m in drawings
+                    if m["event_id"] == event["event_id"] and "hold_seconds" in m
                 ),
-                None,
-            )
-            hold_frame = None
-            hold_frames = 0
-            if hold_mark is not None:
-                hold_frame = math.ceil(
-                    (hold_mark["start_seconds"] - start) * rate - 1e-9
+                key=lambda m: m["start_seconds"],
+            ):
+                hold_plan[math.ceil((mark["start_seconds"] - start) * rate - 1e-9)] = (
+                    mark,
+                    max(1, round(mark["hold_seconds"] * rate)),
                 )
-                hold_frames = max(1, round(hold_mark["hold_seconds"] * rate))
+            hold_reel_starts = {}
             speed_mark = next(
                 (
                     mark
@@ -191,7 +190,6 @@ def _render_reel(
                     speed_step = round(speed_mark["speed"])
             clip_start_count = count
             speed_output_start = speed_output_frames = 0
-            hold_reel_start_count = None
             # Include the frame spanning the start, including subframe tail clips.
             seek = max(0, start - 1 / info["fps"])
             lead = start - seek
@@ -248,9 +246,9 @@ def _render_reel(
                         shutil.copyfile(painted, work / f"frame-{count:08d}.png")
                         count += 1
                         speed_output_frames += 1
-                if frame_index == hold_frame:
-                    hold_reel_start_count = count
-                    for _ in range(hold_frames):
+                if frame_index in hold_plan:
+                    hold_reel_starts[frame_index] = count
+                    for _ in range(hold_plan[frame_index][1]):
                         _check(cancelled)
                         shutil.copyfile(painted, work / f"frame-{count:08d}.png")
                         count += 1
@@ -262,18 +260,23 @@ def _render_reel(
                 "reel_end_seconds": count / rate,
                 "frame_count": count - clip_start_count,
             }
-            if hold_mark is not None:
-                source_seconds = start + hold_frame / rate
-                hold_reel_start = hold_reel_start_count / rate
-                hold_reel_end = hold_reel_start + hold_frames / rate
-                clip["hold"] = {
-                    "drawing_id": hold_mark["id"],
-                    "source_seconds": source_seconds,
-                    "hold_seconds": hold_frames / rate,
-                    "reel_start_seconds": hold_reel_start,
-                    "reel_end_seconds": hold_reel_end,
-                    "frame_count": hold_frames,
-                }
+            if hold_plan:
+                holds = []
+                for hold_frame, (hold_mark, hold_frames) in sorted(hold_plan.items()):
+                    hold_reel_start = hold_reel_starts[hold_frame] / rate
+                    holds.append(
+                        {
+                            "drawing_id": hold_mark["id"],
+                            "source_seconds": start + hold_frame / rate,
+                            "hold_seconds": hold_frames / rate,
+                            "reel_start_seconds": hold_reel_start,
+                            "reel_end_seconds": hold_reel_start + hold_frames / rate,
+                            "frame_count": hold_frames,
+                        }
+                    )
+                clip["hold"] = holds[0]  # first hold, kept for older readers
+                if len(holds) > 1:
+                    clip["holds"] = holds
             if speed_mark is not None:
                 speed_source_start = start + speed_first / rate
                 clip["speed"] = {
@@ -311,8 +314,9 @@ def _render_reel(
                 )
                 for i, clip in enumerate(clips):
                     cuts = []
-                    if "hold" in clip:
-                        hold = clip["hold"]
+                    for hold in clip.get(
+                        "holds", [clip["hold"]] if "hold" in clip else []
+                    ):
                         cuts.append(
                             (
                                 min(
@@ -673,6 +677,8 @@ def _arrow_head(path, length, spread=0.42):
     return [tip, wings[0], notch, wings[1]], notch
 
 
+MAX_HOLDS_PER_EVENT = 5
+MAX_HOLD_TOTAL_SECONDS = 30
 STABILIZE_KINDS = frozenset(
     {"area", "line", "arrow", "polyline", "curve", "polygon", "label", "nametag"}
 )
@@ -741,7 +747,7 @@ def _drawing_z_tier(kind):
     """Stable painter tiers: background regions first, annotations last."""
     if kind == "area":
         return 0
-    if kind in ("line", "polyline", "arrow", "curve", "polygon"):
+    if kind in ("line", "polyline", "arrow", "curve", "polygon", "trail"):
         return 1
     if kind in ("ellipse", "spotlight"):
         return 2
@@ -997,7 +1003,7 @@ def _paint(
                     tuple(map(tuple, _positions(mark, time))),
                     round(max(0, time - mark["start_seconds"]) * 10)
                     if mark["kind"] == "stopwatch"
-                    else None,
+                    else (round(time * 1000) if mark["kind"] == "trail" else None),
                     None if uniform_fade else round(alpha, 4),
                 )
                 for mark, alpha in zip(active, alphas)
@@ -1043,6 +1049,38 @@ def _paint(
                 if mark.get("text"):
                     text = f"{mark['text']} {text}"
                 label(text, pts[0], color=color, pen=target_pen)
+            elif kind == "trail":
+                trail = float(mark.get("trail_seconds", 2.0))
+                steps = max(8, min(48, round(trail * 12)))
+                begin = max(mark["start_seconds"], time - trail)
+                samples = []
+                for index in range(steps + 1):
+                    when = begin + (time - begin) * index / steps
+                    ((px, py),) = _positions(mark, when)
+                    samples.append((px * width * scale, py * height * scale))
+                rgb = tuple(int(color[index : index + 2], 16) for index in (1, 3, 5))
+                count = len(samples) - 1
+                for index in range(count):
+                    fade = (index + 1) / count  # 0 at the tail, 1 at the head
+                    segment = samples[index : index + 2]
+                    target_pen.line(
+                        segment,
+                        fill=(16, 27, 35, round(150 * fade)),
+                        width=round(stroke * (0.5 + 1.1 * fade) + 2 * scale),
+                    )
+                    target_pen.line(
+                        segment,
+                        fill=(*rgb, round(255 * fade)),
+                        width=max(1, round(stroke * (0.4 + 1.0 * fade))),
+                    )
+                hx, hy = samples[-1]
+                dot = stroke * 1.3
+                target_pen.ellipse(
+                    (hx - dot, hy - dot, hx + dot, hy + dot),
+                    fill=color,
+                    outline=halo,
+                    width=scale,
+                )
             elif kind == "label":
                 label(mark["text"], pts[0], color=color, pen=target_pen)
             elif kind == "area":
@@ -1339,8 +1377,11 @@ def _validate(events, drawings, info, width, fps):
         "easing",
         "stabilize",
         "ground",
+        "trail_seconds",
     }
-    hold_owners = set()
+    hold_counts = {}
+    hold_totals = {}
+    hold_frame_keys = set()
     speed_owners = set()
     speed_spans = {}
     hold_starts = {}
@@ -1361,6 +1402,7 @@ def _validate(events, drawings, info, width, fps):
             "spotlight": 2,
             "stopwatch": 1,
             "nametag": 1,
+            "trail": 1,
         }.get(kind)
         if (
             (expected and len(value) != expected)
@@ -1404,6 +1446,7 @@ def _validate(events, drawings, info, width, fps):
             "spotlight",
             "stopwatch",
             "nametag",
+            "trail",
             "speed",
         ):
             raise RenderError("Unknown drawing kind")
@@ -1432,8 +1475,14 @@ def _validate(events, drawings, info, width, fps):
             hold_seconds = mark["hold_seconds"]
             if not _number(hold_seconds) or not 0 < hold_seconds <= 10:
                 raise RenderError("hold_seconds must be a finite number in (0, 10]")
-            if owner in hold_owners:
-                raise RenderError("At most one hold is allowed per event")
+            if hold_counts.get(owner, 0) >= MAX_HOLDS_PER_EVENT:
+                raise RenderError(
+                    f"At most {MAX_HOLDS_PER_EVENT} holds are allowed per event"
+                )
+            if hold_totals.get(owner, 0) + hold_seconds > MAX_HOLD_TOTAL_SECONDS:
+                raise RenderError(
+                    f"Holds in one event may total at most {MAX_HOLD_TOTAL_SECONDS} s"
+                )
             rate = fps if fps is not None else info["fps"]
             frames = max(
                 1,
@@ -1447,11 +1496,16 @@ def _validate(events, drawings, info, width, fps):
                 raise RenderError(
                     "Hold must land on a displayed frame within its drawing interval"
                 )
-            hold_owners.add(owner)
+            hold_counts[owner] = hold_counts.get(owner, 0) + 1
+            hold_totals[owner] = hold_totals.get(owner, 0) + hold_seconds
+            frame_key = (owner, hold_frame)
+            if frame_key in hold_frame_keys:
+                raise RenderError("Two holds cannot start on the same frame")
+            hold_frame_keys.add(frame_key)
         if kind == "speed":
             speed_spans[owner] = (start, end)
         if "hold_seconds" in mark:
-            hold_starts[owner] = start
+            hold_starts.setdefault(owner, []).append(start)
         if "arrow" in mark and (
             kind != "polyline" or not isinstance(mark["arrow"], bool)
         ):
@@ -1526,6 +1580,14 @@ def _validate(events, drawings, info, width, fps):
                 or any(ord(c) < 32 for c in text)
             ):
                 raise RenderError("Drawing text must be a short nonempty single line")
+        if kind == "trail":
+            seconds = mark.get("trail_seconds", 2.0)
+            if not _number(seconds) or not 0.3 <= seconds <= 10:
+                raise RenderError("trail_seconds must be a number in [0.3, 10]")
+            if len(mark.get("keyframes", [])) < 2:
+                raise RenderError("A trail needs at least two keyframes to follow")
+        elif "trail_seconds" in mark:
+            raise RenderError("trail_seconds is only valid for trail drawings")
         for flag, kinds in (("stabilize", STABILIZE_KINDS), ("ground", GROUND_KINDS)):
             if flag in mark and (
                 type(mark[flag]) is not bool or mark["kind"] not in kinds
@@ -1558,8 +1620,7 @@ def _validate(events, drawings, info, width, fps):
         speed_last = min(frames, math.ceil((span[1] - first) * rate - 1e-9))
         if speed_first >= speed_last:
             raise RenderError("A speed segment must cover at least one output frame")
-        hold_start = hold_starts.get(owner)
-        if hold_start is not None:
+        for hold_start in hold_starts.get(owner, ()):
             hold_frame = math.ceil((hold_start - first) * rate - 1e-9)
             if speed_first <= hold_frame < speed_last:
                 raise RenderError("A hold cannot start inside a speed segment")

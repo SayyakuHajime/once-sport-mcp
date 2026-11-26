@@ -101,7 +101,7 @@ def test_validation_accepts_hold_and_rejects_multiple_or_off_grid_holds():
     from once_sport_mcp.rendering import validate_plan
 
     assert validate_plan([event()], [drawing(hold_seconds=0.35)], media()) is None
-    with pytest.raises(RenderError, match="one hold"):
+    with pytest.raises(RenderError, match="same frame"):
         validate_plan(
             [event()],
             [

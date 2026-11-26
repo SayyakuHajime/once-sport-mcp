@@ -370,3 +370,20 @@ def test_tags_add_following_nametags_and_validate_shape():
     ):
         with pytest.raises(FormationError):
             build_formation(results, media=MEDIA, event_id="bad", tags=bad)
+
+
+def test_trails_add_one_following_trail_per_target():
+    results = [
+        tracking_result(moving_boxes(0.1, y=0.25)),
+        tracking_result(moving_boxes(0.7, y=0.25)),
+    ]
+    plan = build_formation(results, media=MEDIA, event_id="tr", trails=1.5)
+    trails = [mark for mark in plan["drawings"] if mark["kind"] == "trail"]
+    assert [mark["id"] for mark in trails] == ["formation-trail-0", "formation-trail-1"]
+    assert all(mark["trail_seconds"] == 1.5 for mark in trails)
+    assert all(
+        len(mark["keyframes"]) == plan["interval"]["frame_count"] for mark in trails
+    )
+    for bad in (0.1, 11, True, "2"):
+        with pytest.raises(FormationError):
+            build_formation(results, media=MEDIA, event_id="tr", trails=bad)
