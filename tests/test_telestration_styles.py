@@ -273,3 +273,17 @@ def test_stroke_opacity_lightens_the_arrow(tmp_path):
     half = paint(tmp_path, [mark("arrow", line, color="#FF2020", opacity=0.5)])
     assert full.getpixel((320, 180))[0] > 200
     assert 90 < half.getpixel((320, 180))[0] < 160
+
+
+def test_gaps_scale_down_on_short_paths_so_the_arrow_stays_visible(tmp_path):
+    short = mark(
+        "arrow",
+        [[0.5, 0.5], [0.56, 0.5]],
+        dash="dotted",
+        color="#FF2020",
+        start_gap=0.1,
+        end_gap=0.1,
+    )
+    image = paint(tmp_path, [short])
+    red = lambda r, g, b: r > 200 and g < 90
+    assert count(image, (310, 160, 400, 200), red) > 30  # head and dots both remain

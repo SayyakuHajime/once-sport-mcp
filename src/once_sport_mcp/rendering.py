@@ -775,7 +775,10 @@ def _gap_endpoints(points, start_gap, end_gap):
     """Move both ends of a two-point path inwards (no-op if it would collapse)."""
     (ax, ay), (bx, by) = points
     length = math.dist(points[0], points[1])
-    if length <= (start_gap + end_gap) * 1.2 + 1e-9:
+    if start_gap + end_gap > 0.45 * length:  # never spend more than 45% on gaps
+        factor = 0.45 * length / (start_gap + end_gap)
+        start_gap, end_gap = start_gap * factor, end_gap * factor
+    if length <= 1e-9:
         return points
     ux, uy = (bx - ax) / length, (by - ay) / length
     return [
@@ -1146,6 +1149,7 @@ def _paint(
     from PIL import Image, ImageDraw
 
     overlay_cache = overlay_cache if overlay_cache is not None else [None, None]
+    tips = []  # arrowhead circles (x, y, radius) that the ground mask must not hide
     with Image.open(path) as source:
         base = source.convert("RGB")
     width, height = base.size
@@ -1245,6 +1249,7 @@ def _paint(
     overlay = None
     if key is not None and overlay_cache[0] == key:
         overlay = overlay_cache[1]
+        tips = overlay_cache[2] if len(overlay_cache) > 2 else []
     elif key is not None:
         placed_tags = []
         for mark, alpha in zip(active, alphas):
@@ -1347,6 +1352,13 @@ def _paint(
                     max(9, height / 32) * scale, 0.3 * _path_length(curve_pts)
                 )
                 lob_head, lob_notch = _arrow_head(curve_pts, head_len)
+                tips.append(
+                    (
+                        lob_head[0][0] / scale,
+                        lob_head[0][1] / scale,
+                        head_len * 0.9 / scale,
+                    )
+                )
                 curve_pts = _trim_end(curve_pts, head_len * 0.7)
                 curve_pts[-1] = lob_notch
                 _tapered_line(
@@ -1593,38 +1605,51 @@ def _paint(
                     line = pts
                 start_gap = mark.get("start_gap", 0) * height * scale
                 end_gap = mark.get("end_gap", 0) * height * scale
-                if (start_gap or end_gap) and _path_length(line) > (
-                    start_gap + end_gap
-                ) * 1.2 + 4 * scale:
-                    if start_gap:
-                        line = _trim_end(line[::-1], start_gap)[::-1]
-                    if end_gap:
-                        line = _trim_end(line, end_gap)
+                reach = _path_length(line)
+                if start_gap + end_gap > 0.45 * reach:  # gaps never eat the path
+                    factor = 0.45 * reach / (start_gap + end_gap)
+                    start_gap, end_gap = start_gap * factor, end_gap * factor
+                if start_gap:
+                    line = _trim_end(line[::-1], start_gap)[::-1]
+                if end_gap:
+                    line = _trim_end(line, end_gap)
                 has_head = kind in ("arrow", "curve") or (
                     kind == "polyline" and mark.get("arrow", False)
                 )
                 head_len = min(max(9, height / 32) * scale, 0.45 * _path_length(line))
                 head = None
                 if has_head and len(line) >= 2 and head_len > 0:
+                    if mark.get("dash") == "dotted":
+                        head_len = min(head_len * 1.2, 0.6 * _path_length(line))
                     head, notch = _arrow_head(line, head_len)
                     line = _trim_end(line, head_len * 0.7)
                     line[-1] = notch
+                    tips.append(
+                        (head[0][0] / scale, head[0][1] / scale, head_len * 0.9 / scale)
+                    )
                 if mark.get("dash") == "dotted":
-                    dots = _arc_samples(line, 2.6 * stroke)
+                    radius = stroke * 0.5
+                    spacing = 3.4 * stroke
+                    dots = _arc_samples(line, spacing)
+                    if head is not None:  # keep a clear gap before the arrowhead
+                        dots = [
+                            d for d in dots if math.dist(d, line[-1]) >= spacing * 0.75
+                        ]
                     for cx, cy in dots:
-                        r = stroke * 0.95
                         target_pen.ellipse(
                             (
-                                cx - r - scale,
-                                cy - r - scale,
-                                cx + r + scale,
-                                cy + r + scale,
+                                cx - radius - scale,
+                                cy - radius - scale,
+                                cx + radius + scale,
+                                cy + radius + scale,
                             ),
                             fill=halo,
                         )
                     for cx, cy in dots:
-                        r = stroke * 0.95
-                        target_pen.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+                        target_pen.ellipse(
+                            (cx - radius, cy - radius, cx + radius, cy + radius),
+                            fill=color,
+                        )
                 elif mark.get("taper"):
                     _tapered_line(
                         target_pen,
@@ -1670,7 +1695,7 @@ def _paint(
                 layer = target_layer
                 pen = target_pen
         overlay = layer.resize(base.size, Image.Resampling.LANCZOS)
-        overlay_cache[:] = [key, overlay]
+        overlay_cache[:] = [key, overlay, tips]
     if overlay is not None:
         composite = _with_alpha(overlay, alphas[0]) if uniform_fade else overlay
         if composite is not None:
@@ -1678,6 +1703,13 @@ def _paint(
                 from . import grassmask
 
                 mask, reliable = grassmask.ground_mask(base)
+                if reliable and tips:
+                    import numpy as np
+
+                    mask = np.array(mask, dtype=bool)
+                    rows, cols = np.ogrid[: mask.shape[0], : mask.shape[1]]
+                    for tx, ty, radius in tips:
+                        mask |= (cols - tx) ** 2 + (rows - ty) ** 2 <= radius**2
                 if reliable:
                     base = grassmask.apply_ground_layer(
                         base.convert("RGBA"), composite, mask
