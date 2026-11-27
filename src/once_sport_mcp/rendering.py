@@ -756,6 +756,19 @@ def _resolve_stabilize(source, events, drawings, cancelled=None):
     return [resolved.get(mark["id"], mark) for mark in drawings], reports
 
 
+def _gap_endpoints(points, start_gap, end_gap):
+    """Move both ends of a two-point path inwards (no-op if it would collapse)."""
+    (ax, ay), (bx, by) = points
+    length = math.dist(points[0], points[1])
+    if length <= (start_gap + end_gap) * 1.2 + 1e-9:
+        return points
+    ux, uy = (bx - ax) / length, (by - ay) / length
+    return [
+        (ax + ux * start_gap, ay + uy * start_gap),
+        (bx - ux * end_gap, by - uy * end_gap),
+    ]
+
+
 def _tapered_line(pen, points, start_width, end_width, fill):
     """Polyline whose width grows linearly with arc length (round joints)."""
     total = _path_length(points) or 1.0
@@ -1291,6 +1304,11 @@ def _paint(
                     width=scale,
                 )
             elif kind == "lob":
+                pts = _gap_endpoints(
+                    pts,
+                    mark.get("start_gap", 0) * height * scale,
+                    mark.get("end_gap", 0) * height * scale,
+                )
                 (lx0, ly0), (lx1, ly1) = pts
                 reach = math.dist(pts[0], pts[1])
                 lift = float(mark.get("arc", 0.18)) * reach
@@ -1556,6 +1574,15 @@ def _paint(
                     line = _spline(pts)
                 else:
                     line = pts
+                start_gap = mark.get("start_gap", 0) * height * scale
+                end_gap = mark.get("end_gap", 0) * height * scale
+                if (start_gap or end_gap) and _path_length(line) > (
+                    start_gap + end_gap
+                ) * 1.2 + 4 * scale:
+                    if start_gap:
+                        line = _trim_end(line[::-1], start_gap)[::-1]
+                    if end_gap:
+                        line = _trim_end(line, end_gap)
                 has_head = kind in ("arrow", "curve") or (
                     kind == "polyline" and mark.get("arrow", False)
                 )
@@ -1783,6 +1810,8 @@ def _validate(events, drawings, info, width, fps):
         "arc",
         "size",
         "tag_color",
+        "start_gap",
+        "end_gap",
         "players",
         "links",
     }
@@ -1929,6 +1958,15 @@ def _validate(events, drawings, info, width, fps):
         ):
             if flag in mark and (kind not in kinds or not isinstance(mark[flag], bool)):
                 raise RenderError(f"{flag} must be a boolean used only with {kinds}")
+        for gap_key in ("start_gap", "end_gap"):
+            if gap_key in mark and (
+                kind not in ("line", "arrow", "polyline", "curve", "lob")
+                or not _number(mark[gap_key])
+                or not 0 <= mark[gap_key] <= 0.1
+            ):
+                raise RenderError(
+                    f"{gap_key} must be a number in [0, 0.1] on line-like drawings"
+                )
         if "dash" in mark and (
             kind not in ("line", "arrow", "polyline", "curve")
             or not (isinstance(mark["dash"], bool) or mark["dash"] == "dotted")

@@ -51,7 +51,7 @@ Turns a host agent's analysis of a football video into reviewed, reproducible ou
 ## Status
 <a id="section-status"></a>
 
-**Pre-release (`0.1.0a7`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
+**Pre-release (`0.1.0a8`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
 
 - Native Once export rejects holds, speed segments, text, flags and the newer drawing kinds; use the custom renderer for them.
 - Tracking is seeded by the host, one target per job. There is no re-identification, occlusion recovery or automatic player detection.
@@ -144,7 +144,7 @@ Drawing kinds (custom renderer): `ellipse`, `arrow`, `line`, `polygon`, `label`,
 - **Pitch templates:** `build_pitch_drawings` (CLI `pitch`) projects a circle, rectangle, half-spaces, five channels, zone 14, a zone grid, a cover shadow or an offside line through a 4-point pitch calibration (metres on a 105x68 pitch to normalized frame points), so shapes follow the pitch perspective. The calibration is fixed: use it for a static camera or a short shot. Pitch templates are projected with a fixed calibration, so combine them with `stabilize` for a moving camera.
 
   ![Pitch templates through a perspective calibration](assets/pitch-templates.png)
-- **Analyst-style telestration:** `player_marker` (a filled ellipse at the feet, a faint light column over the player and a `POSITION | NAME` tag below, with optional `tag_color` and `size`), `lob` (a lofted pass: a tapered arc plus a dark ground shadow, `arc` sets the height), `dash: "dotted"` for movement and marking arrows, `taper: true` for arrows and curves, and `board`, a top-down tactical board inset with numbered tokens, names, position codes and link lines (`players` in metres on a 105x68 pitch, `links` as player indexes, the panel is the rectangle between the two points). `build_formation_drawings` tags accept `"style": "marker"` (CLI `--tag POSITION:NAME:marker`). Position codes include `RWF`, `LWF`, `CMF`, `DMF`. Custom renderer only.
+- **Analyst-style telestration:** `player_marker` (a filled ellipse at the feet, a faint light column over the player and a `POSITION | NAME` tag below, with optional `tag_color` and `size`), `lob` (a lofted pass: a tapered arc plus a dark ground shadow, `arc` sets the height), `dash: "dotted"` for movement and marking arrows, `taper: true` for arrows and curves, and `board`, a top-down tactical board inset with numbered tokens, names, position codes and link lines (`players` in metres on a 105x68 pitch, `links` as player indexes, the panel is the rectangle between the two points). `start_gap` and `end_gap` (fractions of the frame height, 0-0.1) on `line`, `arrow`, `polyline`, `curve` and `lob` stop the path short of the player at either end, so an arrow starts and ends next to the players instead of on top of them. `build_formation_drawings` tags accept `"style": "marker"` (CLI `--tag POSITION:NAME:marker`). Position codes include `RWF`, `LWF`, `CMF`, `DMF`. Custom renderer only.
 
   ![Player markers, a lofted pass, dotted and tapered arrows and a tactical board](assets/telestration-styles.png)
 

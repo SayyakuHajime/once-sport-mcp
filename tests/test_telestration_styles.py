@@ -207,3 +207,41 @@ def test_board_draws_pitch_tokens_names_and_links_on_top(tmp_path):
         )
         > 15
     )  # custom colour
+
+
+def test_gaps_keep_arrow_ends_off_the_players(tmp_path):
+    tight = paint(tmp_path, [mark("arrow", [[0.1, 0.5], [0.9, 0.5]], color="#FF2020")])
+    gapped = paint(
+        tmp_path,
+        [
+            mark(
+                "arrow",
+                [[0.1, 0.5], [0.9, 0.5]],
+                color="#FF2020",
+                start_gap=0.06,
+                end_gap=0.06,
+            )
+        ],
+    )
+    red = lambda r, g, b: r > 200 and g < 90
+    start_box, end_box = (50, 165, 80, 195), (555, 165, 590, 195)
+    assert count(tight, start_box, red) > 8 and count(tight, end_box, red) > 8
+    assert count(gapped, start_box, red) == 0 and count(gapped, end_box, red) == 0
+    assert count(gapped, (200, 165, 440, 195), red) > 100  # the shaft is still there
+    for bad in (-0.01, 0.2, True, "0.1"):
+        with pytest.raises(rendering.RenderError):
+            rendering.validate_plan(
+                [EVENT], [mark("arrow", [[0.1, 0.5], [0.9, 0.5]], start_gap=bad)], MEDIA
+            )
+    with pytest.raises(rendering.RenderError):
+        rendering.validate_plan(
+            [EVENT], [mark("ellipse", [[0.4, 0.4], [0.1, 0.1]], end_gap=0.02)], MEDIA
+        )
+
+
+def test_gaps_apply_to_lobs_and_never_collapse_short_paths(tmp_path):
+    lob = mark("lob", [[0.1, 0.7], [0.9, 0.7]], arc=0.2, start_gap=0.05, end_gap=0.05)
+    assert rendering.validate_plan([EVENT], [lob], MEDIA) is None
+    paint(tmp_path, [lob])
+    short = mark("arrow", [[0.5, 0.5], [0.52, 0.5]], start_gap=0.1, end_gap=0.1)
+    paint(tmp_path, [short])  # too short for the gaps: drawn whole, no crash
