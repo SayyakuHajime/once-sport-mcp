@@ -245,3 +245,31 @@ def test_gaps_apply_to_lobs_and_never_collapse_short_paths(tmp_path):
     paint(tmp_path, [lob])
     short = mark("arrow", [[0.5, 0.5], [0.52, 0.5]], start_gap=0.1, end_gap=0.1)
     paint(tmp_path, [short])  # too short for the gaps: drawn whole, no crash
+
+
+def test_opacity_on_strokes_and_ground_on_arrows_validate():
+    line = [[0.1, 0.5], [0.9, 0.5]]
+    for good in (
+        mark("arrow", line, opacity=0.5),
+        mark("curve", [[0.1, 0.5], [0.3, 0.2], [0.8, 0.5]], opacity=1.0, ground=True),
+        mark("lob", line, opacity=0.4, ground=True),
+        mark("arrow", line, ground=True),
+    ):
+        assert rendering.validate_plan([EVENT], [good], MEDIA) is None
+    for bad in (
+        mark("arrow", line, opacity=0.05),
+        mark("arrow", line, opacity=1.5),
+        mark("arrow", line, opacity=True),
+        mark("label", [[0.5, 0.5]], text="x", opacity=0.5),
+        mark("nametag", [[0.5, 0.5]], position="CB", opacity=0.5),
+    ):
+        with pytest.raises(rendering.RenderError):
+            rendering.validate_plan([EVENT], [bad], MEDIA)
+
+
+def test_stroke_opacity_lightens_the_arrow(tmp_path):
+    line = [[0.1, 0.5], [0.9, 0.5]]
+    full = paint(tmp_path, [mark("arrow", line, color="#FF2020")])
+    half = paint(tmp_path, [mark("arrow", line, color="#FF2020", opacity=0.5)])
+    assert full.getpixel((320, 180))[0] > 200
+    assert 90 < half.getpixel((320, 180))[0] < 160

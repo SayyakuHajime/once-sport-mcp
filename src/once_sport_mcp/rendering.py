@@ -696,7 +696,22 @@ STABILIZE_KINDS = frozenset(
     }
 )
 GROUND_KINDS = frozenset(
-    {"area", "line", "arrow", "polyline", "curve", "polygon", "ellipse", "spotlight"}
+    {
+        "area",
+        "line",
+        "arrow",
+        "polyline",
+        "curve",
+        "polygon",
+        "ellipse",
+        "spotlight",
+        "lob",
+        "trail",
+    }
+)
+# Whole-mark opacity (a constant alpha on the painted mark) for strokes.
+OPACITY_KINDS = frozenset(
+    {"line", "arrow", "polyline", "curve", "polygon", "lob", "trail"}
 )
 
 
@@ -1081,6 +1096,8 @@ def _fade_alpha(mark, time):
     fade_out = mark.get("fade_out_seconds")
     if fade_out:
         alpha = min(alpha, max(0.0, (mark["end_seconds"] - time) / fade_out))
+    if mark["kind"] != "area" and "opacity" in mark:
+        alpha *= mark["opacity"]
     return alpha
 
 
@@ -2015,12 +2032,17 @@ def _validate(events, drawings, info, width, fps):
             raise RenderError(
                 "position is only valid for nametag and player_marker drawings"
             )
-        if "opacity" in mark and (
-            kind != "area"
-            or not _number(mark["opacity"])
-            or not 0.05 <= mark["opacity"] <= 0.8
-        ):
-            raise RenderError("Area opacity must be a number in [0.05, 0.8]")
+        if "opacity" in mark:
+            allowed_opacity = (0.05, 0.8) if kind == "area" else (0.1, 1.0)
+            if (
+                (kind != "area" and kind not in OPACITY_KINDS)
+                or not _number(mark["opacity"])
+                or not allowed_opacity[0] <= mark["opacity"] <= allowed_opacity[1]
+            ):
+                raise RenderError(
+                    "opacity must be in [0.05, 0.8] for areas and [0.1, 1] for "
+                    "line-like drawings and lobs/trails"
+                )
         if "style" in mark and (
             kind != "spotlight" or mark["style"] not in ("halo", "ground")
         ):

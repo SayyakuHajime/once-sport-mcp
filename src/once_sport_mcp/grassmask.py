@@ -2,10 +2,11 @@
 
 import math
 
-_MAX_WORK_WIDTH = 1280
+_MAX_WORK_WIDTH = 1920
 _BG_GRID_WIDTH = 240
 _MIN_GROUND_FRACTION = 0.08
 _KIT_CONTRAST = 16.0
+_DARK_KIT_DELTA = 22.0
 _MIN_MODE_FRACTION = 0.04
 _GREEN_HUE_MIN = 24
 _GREEN_HUE_MAX = 92
@@ -138,7 +139,10 @@ def ground_mask(frame_rgb):
     contrast = np.sqrt(
         (0.45 * delta[:, :, 0]) ** 2 + delta[:, :, 1] ** 2 + delta[:, :, 2] ** 2
     )
-    kit = (contrast > _KIT_CONTRAST) & ~((white > 0) & (blobs == 0))
+    # Dark kits (green or black) differ from grass mostly in lightness; the
+    # median background removes broad soft shadows, so what stays is compact.
+    dark = delta[:, :, 0] < -_DARK_KIT_DELTA
+    kit = ((contrast > _KIT_CONTRAST) | dark) & ~((white > 0) & (blobs == 0))
     kit = (
         cv2.morphologyEx(
             kit.astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8)
