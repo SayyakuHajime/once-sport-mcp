@@ -584,6 +584,8 @@ POSITION_CODES = {
     "DM": "mid", "CDM": "mid", "CM": "mid", "RCM": "mid", "LCM": "mid",
     "AM": "mid", "AMF": "mid", "CAM": "mid", "RM": "mid", "LM": "mid",
     "RW": "fwd", "LW": "fwd", "SS": "fwd", "CF": "fwd", "ST": "fwd",
+    "RWF": "fwd", "LWF": "fwd", "RF": "fwd", "LF": "fwd",
+    "CMF": "mid", "DMF": "mid", "RMF": "mid", "LMF": "mid",
 }  # fmt: skip
 _POSITION_COLORS = {
     "gk": "#F2C94C",
@@ -680,7 +682,18 @@ def _arrow_head(path, length, spread=0.42):
 MAX_HOLDS_PER_EVENT = 5
 MAX_HOLD_TOTAL_SECONDS = 30
 STABILIZE_KINDS = frozenset(
-    {"area", "line", "arrow", "polyline", "curve", "polygon", "label", "nametag"}
+    {
+        "area",
+        "line",
+        "arrow",
+        "polyline",
+        "curve",
+        "polygon",
+        "label",
+        "nametag",
+        "lob",
+        "player_marker",
+    }
 )
 GROUND_KINDS = frozenset(
     {"area", "line", "arrow", "polyline", "curve", "polygon", "ellipse", "spotlight"}
@@ -743,13 +756,203 @@ def _resolve_stabilize(source, events, drawings, cancelled=None):
     return [resolved.get(mark["id"], mark) for mark in drawings], reports
 
 
+def _tapered_line(pen, points, start_width, end_width, fill):
+    """Polyline whose width grows linearly with arc length (round joints)."""
+    total = _path_length(points) or 1.0
+    # Densify so a two-point line still tapers smoothly.
+    points = [*_arc_samples(points, total / 48), points[-1]]
+    walked, previous = 0.0, start_width
+    for a, b in itertools.pairwise(points):
+        walked += math.dist(a, b)
+        width = start_width + (end_width - start_width) * walked / total
+        pen.line([a, b], fill=fill, width=max(1, round((previous + width) / 2)))
+        radius = max(0.5, width / 2)
+        pen.ellipse(
+            (b[0] - radius, b[1] - radius, b[0] + radius, b[1] + radius), fill=fill
+        )
+        previous = width
+    first = points[0]
+    radius = max(0.5, start_width / 2)
+    pen.ellipse(
+        (first[0] - radius, first[1] - radius, first[0] + radius, first[1] + radius),
+        fill=fill,
+    )
+
+
+def _arc_samples(points, spacing):
+    """Points every `spacing` of arc length along a path (for dotted lines)."""
+    samples, need = [points[0]], spacing
+    for a, b in itertools.pairwise(points):
+        segment, walked = math.dist(a, b), 0.0
+        while segment - walked >= need - 1e-9 and segment > 0:
+            walked += need
+            need = spacing
+            samples.append(
+                (
+                    a[0] + (b[0] - a[0]) * walked / segment,
+                    a[1] + (b[1] - a[1]) * walked / segment,
+                )
+            )
+        need -= segment - walked
+    return samples
+
+
+def _hex_rgb(value):
+    return tuple(int(value[index : index + 2], 16) for index in (1, 3, 5))
+
+
+def _readable_ink(fill_hex):
+    red, green, blue = _hex_rgb(fill_hex)
+    return "#101B23" if 0.299 * red + 0.587 * green + 0.114 * blue > 140 else "#FFFFFF"
+
+
+def _draw_board(layer, mark, width, height, scale):
+    """Top-down tactical board inset: pitch, player tokens and link lines.
+
+    The panel is the rectangle between the two points. Pitch metres map to the
+    panel with the own goal (x_m = 0) at the bottom and y_m running left to
+    right, so a back four reads left-to-right like on a coaching board.
+    """
+    from PIL import Image, ImageDraw
+
+    (x0, y0), (x1, y1) = [
+        (x * width * scale, y * height * scale) for x, y in mark["points"]
+    ]
+    panel_w, panel_h = x1 - x0, y1 - y0
+    aspect = 68 / 105
+    if panel_w / panel_h > aspect:
+        pitch_h = panel_h * 0.94
+        pitch_w = pitch_h * aspect
+    else:
+        pitch_w = panel_w * 0.94
+        pitch_h = pitch_w / aspect
+    left = x0 + (panel_w - pitch_w) / 2
+    top = y0 + (panel_h - pitch_h) / 2
+    unit = pitch_h / 105
+
+    def at(x_m, y_m):
+        return (left + y_m * unit, top + pitch_h - x_m * unit)
+
+    board = Image.new("RGBA", layer.size)
+    pen = ImageDraw.Draw(board)
+    pen.rounded_rectangle((x0, y0, x1, y1), radius=8 * scale, fill=(14, 42, 30, 236))
+    bands = 14
+    for band in range(bands):
+        if band % 2:
+            pen.rectangle(
+                (
+                    left,
+                    top + pitch_h * band / bands,
+                    left + pitch_w,
+                    top + pitch_h * (band + 1) / bands,
+                ),
+                fill=(255, 255, 255, 14),
+            )
+    line = (240, 240, 240, 235)
+    thin = max(1, round(unit * 0.32))
+
+    def rect(xa, ya, xb, yb):
+        p, q = at(xa, ya), at(xb, yb)
+        pen.rectangle(
+            (min(p[0], q[0]), min(p[1], q[1]), max(p[0], q[0]), max(p[1], q[1])),
+            outline=line,
+            width=thin,
+        )
+
+    rect(0, 0, 105, 68)
+    pen.line([at(52.5, 0), at(52.5, 68)], fill=line, width=thin)
+    centre = at(52.5, 34)
+    radius = 9.15 * unit
+    pen.ellipse(
+        (
+            centre[0] - radius,
+            centre[1] - radius,
+            centre[0] + radius,
+            centre[1] + radius,
+        ),
+        outline=line,
+        width=thin,
+    )
+    for near, sign in ((0.0, 1), (105.0, -1)):
+        rect(near, 13.84, near + sign * 16.5, 54.16)
+        rect(near, 24.84, near + sign * 5.5, 43.16)
+        rect(near, 30.34, near - sign * 2.0, 37.66)
+        spot = at(near + sign * 11, 34)
+        pen.ellipse(
+            (spot[0] - thin, spot[1] - thin, spot[0] + thin, spot[1] + thin), fill=line
+        )
+
+    players = mark.get("players", [])
+    token = pitch_w * 0.036
+    centres = [at(p["x_m"], p["y_m"]) for p in players]
+    link_color = mark.get("color", "#FFD400")
+    for link in mark.get("links", []):
+        route = [centres[index] for index in link]
+        pen.line(
+            route,
+            fill=(16, 27, 35, 255),
+            width=round(token * 0.55 + 2 * scale),
+            joint="curve",
+        )
+        pen.line(
+            route, fill=link_color, width=max(2, round(token * 0.42)), joint="curve"
+        )
+    name_font = _font(max(7, round(token * 0.95)), bold=True)
+    number_font = _font(max(7, round(token * 1.15)), bold=True)
+    code_font = _font(max(6, round(token * 0.72)))
+    for player, (cx, cy) in zip(players, centres):
+        team_fill = {"home": "#1E3BFF", "away": "#F2F2F2"}[player.get("team", "home")]
+        fill = player.get("color", team_fill)
+        pen.ellipse(
+            (
+                cx - token - scale,
+                cy - token - scale,
+                cx + token + scale,
+                cy + token + scale,
+            ),
+            fill=(16, 27, 35, 255),
+        )
+        pen.ellipse((cx - token, cy - token, cx + token, cy + token), fill=fill)
+        if "number" in player:
+            text = str(player["number"])
+            box = pen.textbbox((0, 0), text, font=number_font)
+            pen.text(
+                (cx - (box[0] + box[2]) / 2, cy - (box[1] + box[3]) / 2),
+                text,
+                font=number_font,
+                fill=_readable_ink(fill),
+            )
+        if player.get("name"):
+            box = pen.textbbox((0, 0), player["name"], font=name_font)
+            tx, ty = (
+                cx - (box[0] + box[2]) / 2,
+                cy - token - (box[3] - box[1]) - 3 * scale,
+            )
+            pen.text(
+                (tx + scale, ty + scale),
+                player["name"],
+                font=name_font,
+                fill=(0, 0, 0, 200),
+            )
+            pen.text((tx, ty), player["name"], font=name_font, fill="#FFFFFF")
+        if player.get("position"):
+            box = pen.textbbox((0, 0), player["position"], font=code_font)
+            pen.text(
+                (cx - (box[0] + box[2]) / 2, cy + token + 2 * scale),
+                player["position"],
+                font=code_font,
+                fill=(215, 225, 220, 255),
+            )
+    return Image.alpha_composite(layer, board)
+
+
 def _drawing_z_tier(kind):
     """Stable painter tiers: background regions first, annotations last."""
     if kind == "area":
         return 0
-    if kind in ("line", "polyline", "arrow", "curve", "polygon", "trail"):
+    if kind in ("line", "polyline", "arrow", "curve", "polygon", "trail", "lob"):
         return 1
-    if kind in ("ellipse", "spotlight"):
+    if kind in ("ellipse", "spotlight", "player_marker"):
         return 2
     if kind == "nametag":
         return 3
@@ -1026,7 +1229,13 @@ def _paint(
             ]
             kind = mark["kind"]
             color = mark.get(
-                "color", {"line": "#6DE0D4", "label": "#FFFFFF"}.get(kind, "#FFD166")
+                "color",
+                {
+                    "line": "#6DE0D4",
+                    "label": "#FFFFFF",
+                    "lob": "#E5484D",
+                    "player_marker": "#E5565C",
+                }.get(kind, "#FFD166"),
             )
             if kind == "curve":
                 start, control, end = pts
@@ -1081,6 +1290,112 @@ def _paint(
                     outline=halo,
                     width=scale,
                 )
+            elif kind == "lob":
+                (lx0, ly0), (lx1, ly1) = pts
+                reach = math.dist(pts[0], pts[1])
+                lift = float(mark.get("arc", 0.18)) * reach
+                control = ((lx0 + lx1) / 2, (ly0 + ly1) / 2 - 2 * lift)
+                curve_pts = [
+                    (
+                        (1 - t) ** 2 * lx0 + 2 * (1 - t) * t * control[0] + t * t * lx1,
+                        (1 - t) ** 2 * ly0 + 2 * (1 - t) * t * control[1] + t * t * ly1,
+                    )
+                    for t in (i / 32 for i in range(33))
+                ]
+                # Ground shadow: where the ball is on the pitch; the arc is its height.
+                target_pen.line(
+                    [pts[0], pts[1]],
+                    fill=(16, 27, 35, 120),
+                    width=max(2, round(stroke * 1.3)),
+                )
+                head_len = min(
+                    max(9, height / 32) * scale, 0.3 * _path_length(curve_pts)
+                )
+                lob_head, lob_notch = _arrow_head(curve_pts, head_len)
+                curve_pts = _trim_end(curve_pts, head_len * 0.7)
+                curve_pts[-1] = lob_notch
+                _tapered_line(
+                    target_pen,
+                    curve_pts,
+                    stroke * 0.5 + 3 * scale,
+                    stroke * 1.7 + 3 * scale,
+                    halo,
+                )
+                _tapered_line(target_pen, curve_pts, stroke * 0.4, stroke * 1.55, color)
+                target_pen.polygon(lob_head, fill=halo, outline=halo, width=scale * 2)
+                target_pen.polygon(lob_head, fill=color)
+            elif kind == "player_marker":
+                ax, ay = pts[0]
+                size = float(mark.get("size", 1.0))
+                rx = 0.0155 * width * scale * size
+                ry = rx * 0.34
+                column_h = 0.105 * height * scale * size
+                column = Image.new("RGBA", target_layer.size)
+                column_pen = ImageDraw.Draw(column)
+                steps = 24
+                for index in range(steps):
+                    column_pen.rectangle(
+                        (
+                            ax - rx * 0.82,
+                            ay - column_h * (index + 1) / steps,
+                            ax + rx * 0.82,
+                            ay - column_h * index / steps,
+                        ),
+                        fill=(255, 255, 255, round(95 * (1 - index / steps) ** 1.2)),
+                    )
+                target_layer = Image.alpha_composite(target_layer, column)
+                target_pen = ImageDraw.Draw(target_layer)
+                target_pen.ellipse(
+                    (
+                        ax - rx - scale,
+                        ay - ry - scale,
+                        ax + rx + scale,
+                        ay + ry + scale,
+                    ),
+                    fill=halo,
+                )
+                target_pen.ellipse((ax - rx, ay - ry, ax + rx, ay + ry), fill=color)
+                tag = " | ".join(
+                    part for part in (mark.get("position"), mark.get("text")) if part
+                )
+                if tag:
+                    tag_fill = mark.get("tag_color", "#FFFFFF")
+                    tag_font = _font(max(10, round(height / 60)) * scale, bold=True)
+                    box = target_pen.textbbox((0, 0), tag, font=tag_font)
+                    pad = 3 * scale
+                    tag_w, tag_h = box[2] - box[0] + 2 * pad, box[3] - box[1] + 2 * pad
+                    tag_left = min(
+                        max(ax - tag_w / 2, 2 * scale),
+                        width * scale - tag_w - 2 * scale,
+                    )
+                    tag_top = min(
+                        ay + ry + 2 * scale,
+                        height * scale - footer_height - tag_h - 2 * scale,
+                    )
+                    target_pen.rounded_rectangle(
+                        (
+                            tag_left - scale,
+                            tag_top - scale,
+                            tag_left + tag_w + scale,
+                            tag_top + tag_h + scale,
+                        ),
+                        radius=3 * scale,
+                        fill=halo,
+                    )
+                    target_pen.rounded_rectangle(
+                        (tag_left, tag_top, tag_left + tag_w, tag_top + tag_h),
+                        radius=2 * scale,
+                        fill=tag_fill,
+                    )
+                    target_pen.text(
+                        (tag_left + pad - box[0], tag_top + pad - box[1]),
+                        tag,
+                        font=tag_font,
+                        fill=_readable_ink(tag_fill),
+                    )
+            elif kind == "board":
+                target_layer = _draw_board(target_layer, mark, width, height, scale)
+                target_pen = ImageDraw.Draw(target_layer)
             elif kind == "label":
                 label(mark["text"], pts[0], color=color, pen=target_pen)
             elif kind == "area":
@@ -1250,23 +1565,57 @@ def _paint(
                     head, notch = _arrow_head(line, head_len)
                     line = _trim_end(line, head_len * 0.7)
                     line[-1] = notch
-                shaft = (
-                    _dashes(line, 5 * stroke, 3.2 * stroke)
-                    if mark.get("dash")
-                    else [line]
-                )
-                for piece in shaft:
-                    target_pen.line(
-                        piece, fill=halo, width=round(stroke + 3 * scale), joint="curve"
+                if mark.get("dash") == "dotted":
+                    dots = _arc_samples(line, 2.6 * stroke)
+                    for cx, cy in dots:
+                        r = stroke * 0.95
+                        target_pen.ellipse(
+                            (
+                                cx - r - scale,
+                                cy - r - scale,
+                                cx + r + scale,
+                                cy + r + scale,
+                            ),
+                            fill=halo,
+                        )
+                    for cx, cy in dots:
+                        r = stroke * 0.95
+                        target_pen.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+                elif mark.get("taper"):
+                    _tapered_line(
+                        target_pen,
+                        line,
+                        stroke * 0.45 + 3 * scale,
+                        stroke * 1.6 + 3 * scale,
+                        halo,
                     )
-                for piece in shaft:
-                    target_pen.line(
-                        piece, fill=color, width=round(stroke), joint="curve"
+                    _tapered_line(target_pen, line, stroke * 0.35, stroke * 1.5, color)
+                else:
+                    shaft = (
+                        _dashes(line, 5 * stroke, 3.2 * stroke)
+                        if mark.get("dash")
+                        else [line]
                     )
+                    for piece in shaft:
+                        target_pen.line(
+                            piece,
+                            fill=halo,
+                            width=round(stroke + 3 * scale),
+                            joint="curve",
+                        )
+                    for piece in shaft:
+                        target_pen.line(
+                            piece, fill=color, width=round(stroke), joint="curve"
+                        )
                 if head is not None:
                     target_pen.polygon(head, fill=halo, outline=halo, width=scale * 2)
                     target_pen.polygon(head, fill=color)
-            if mark.get("text") and kind not in ("stopwatch", "label", "nametag"):
+            if mark.get("text") and kind not in (
+                "stopwatch",
+                "label",
+                "nametag",
+                "player_marker",
+            ):
                 label(mark["text"], pts[0], color=color, pen=target_pen)
             if fade_mark:
                 faded_mark = _with_alpha(target_layer, alpha)
@@ -1324,6 +1673,58 @@ def _number(value):
     )
 
 
+def _validate_board(mark):
+    import re
+
+    (x0, y0), (x1, y1) = (
+        mark["points"] if len(mark.get("points", [])) == 2 else ((0, 0), (0, 0))
+    )
+    if not (x1 - x0 >= 0.1 and y1 - y0 >= 0.1):
+        raise RenderError("A board panel must span at least 10% of the frame both ways")
+    players = mark.get("players")
+    if not isinstance(players, list) or not 1 <= len(players) <= 30:
+        raise RenderError("A board needs 1 to 30 players")
+    allowed = {"x_m", "y_m", "number", "name", "position", "team", "color"}
+    for player in players:
+        if not isinstance(player, dict) or set(player) - allowed:
+            raise RenderError("Invalid board player")
+        for key, high in (("x_m", 105), ("y_m", 68)):
+            if not _number(player.get(key)) or not 0 <= player[key] <= high:
+                raise RenderError(
+                    f"Board player {key} must be metres on a 105x68 pitch"
+                )
+        if "number" in player and (
+            type(player["number"]) is not int or not 0 <= player["number"] <= 99
+        ):
+            raise RenderError("Board player number must be an integer 0-99")
+        if "name" in player and (
+            not isinstance(player["name"], str)
+            or not player["name"].strip()
+            or len(player["name"]) > 16
+            or any(ord(c) < 32 for c in player["name"])
+        ):
+            raise RenderError("Board player name must be 1-16 printable characters")
+        if "position" in player and player["position"] not in POSITION_CODES:
+            raise RenderError("Unknown board position code")
+        if player.get("team", "home") not in ("home", "away"):
+            raise RenderError("Board team must be 'home' or 'away'")
+        if "color" in player and (
+            not isinstance(player["color"], str)
+            or not re.fullmatch(r"#[0-9a-fA-F]{6}", player["color"])
+        ):
+            raise RenderError("Board player color must be #RRGGBB")
+    links = mark.get("links", [])
+    if not isinstance(links, list) or len(links) > 12:
+        raise RenderError("A board takes at most 12 links")
+    for link in links:
+        if (
+            not isinstance(link, list)
+            or not 2 <= len(link) <= 11
+            or any(type(i) is not int or not 0 <= i < len(players) for i in link)
+        ):
+            raise RenderError("Each board link is 2-11 player indexes")
+
+
 def _validate(events, drawings, info, width, fps):
     import re
 
@@ -1378,6 +1779,12 @@ def _validate(events, drawings, info, width, fps):
         "stabilize",
         "ground",
         "trail_seconds",
+        "taper",
+        "arc",
+        "size",
+        "tag_color",
+        "players",
+        "links",
     }
     hold_counts = {}
     hold_totals = {}
@@ -1403,6 +1810,9 @@ def _validate(events, drawings, info, width, fps):
             "stopwatch": 1,
             "nametag": 1,
             "trail": 1,
+            "player_marker": 1,
+            "lob": 2,
+            "board": 2,
         }.get(kind)
         if (
             (expected and len(value) != expected)
@@ -1447,6 +1857,9 @@ def _validate(events, drawings, info, width, fps):
             "stopwatch",
             "nametag",
             "trail",
+            "lob",
+            "player_marker",
+            "board",
             "speed",
         ):
             raise RenderError("Unknown drawing kind")
@@ -1512,15 +1925,46 @@ def _validate(events, drawings, info, width, fps):
             raise RenderError("arrow must be a boolean used only with polyline")
         for flag, kinds in (
             ("smooth", ("polyline",)),
-            ("dash", ("line", "arrow", "polyline", "curve")),
+            ("taper", ("arrow", "curve", "polyline")),
         ):
             if flag in mark and (kind not in kinds or not isinstance(mark[flag], bool)):
                 raise RenderError(f"{flag} must be a boolean used only with {kinds}")
-        if kind == "nametag":
+        if "dash" in mark and (
+            kind not in ("line", "arrow", "polyline", "curve")
+            or not (isinstance(mark["dash"], bool) or mark["dash"] == "dotted")
+        ):
+            raise RenderError(
+                "dash must be true, false or 'dotted' on line-like drawings"
+            )
+        if mark.get("taper") and mark.get("dash"):
+            raise RenderError("taper cannot be combined with dash")
+        if "arc" in mark and (
+            kind != "lob" or not _number(mark["arc"]) or not 0.05 <= mark["arc"] <= 0.6
+        ):
+            raise RenderError("arc must be a number in [0.05, 0.6] used only with lob")
+        if "size" in mark and (
+            kind != "player_marker"
+            or not _number(mark["size"])
+            or not 0.4 <= mark["size"] <= 3
+        ):
+            raise RenderError(
+                "size must be a number in [0.4, 3] used only with player_marker"
+            )
+        if "tag_color" in mark and (
+            kind != "player_marker"
+            or not isinstance(mark["tag_color"], str)
+            or not re.fullmatch(r"#[0-9a-fA-F]{6}", mark["tag_color"])
+        ):
+            raise RenderError("tag_color must be #RRGGBB used only with player_marker")
+        if kind == "board":
+            _validate_board(mark)
+        elif "players" in mark or "links" in mark:
+            raise RenderError("players and links are only valid for board drawings")
+        if kind in ("nametag", "player_marker"):
             position, name = mark.get("position"), mark.get("text")
             if position is not None and position not in POSITION_CODES:
-                raise RenderError("Unknown nametag position code")
-            if position is None and name is None:
+                raise RenderError("Unknown position code")
+            if kind == "nametag" and position is None and name is None:
                 raise RenderError("A nametag needs a position code or a name")
             if name is not None and (
                 not isinstance(name, str)
@@ -1530,7 +1974,9 @@ def _validate(events, drawings, info, width, fps):
             ):
                 raise RenderError("Nametag text must be 1-24 printable characters")
         elif "position" in mark:
-            raise RenderError("position is only valid for nametag drawings")
+            raise RenderError(
+                "position is only valid for nametag and player_marker drawings"
+            )
         if "opacity" in mark and (
             kind != "area"
             or not _number(mark["opacity"])

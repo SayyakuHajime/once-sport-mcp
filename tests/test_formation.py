@@ -387,3 +387,30 @@ def test_trails_add_one_following_trail_per_target():
     for bad in (0.1, 11, True, "2"):
         with pytest.raises(FormationError):
             build_formation(results, media=MEDIA, event_id="tr", trails=bad)
+
+
+def test_marker_style_tags_become_player_markers_that_validate():
+    results = [
+        tracking_result(moving_boxes(0.1, y=0.25)),
+        tracking_result(moving_boxes(0.7, y=0.25)),
+    ]
+    plan = build_formation(
+        results,
+        media=MEDIA,
+        event_id="mk",
+        tags=[
+            {"position": "CB", "name": "OTAMENDI", "style": "marker"},
+            {"position": "GK"},
+        ],
+    )
+    kinds = {
+        mark["id"]: mark["kind"] for mark in plan["drawings"] if "tag" in mark["id"]
+    }
+    assert kinds == {"formation-tag-0": "player_marker", "formation-tag-1": "nametag"}
+    with pytest.raises(FormationError):
+        build_formation(
+            results,
+            media=MEDIA,
+            event_id="mk",
+            tags=[{"position": "CB", "style": "big"}, None],
+        )

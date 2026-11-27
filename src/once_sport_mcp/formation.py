@@ -132,12 +132,14 @@ def build_formation(
                 "tags must be a list with one dict (or null) per tracked target"
             )
         for tag in tags:
+            if tag is not None and tag.get("style", "pill") not in ("pill", "marker"):
+                raise FormationError("Tag style must be 'pill' or 'marker'")
             if tag is not None and any(
                 not isinstance(value, str) for value in tag.values()
             ):
                 raise FormationError("Tag position and name must be strings")
             if tag is not None and (
-                set(tag) - {"position", "name"}
+                set(tag) - {"position", "name", "style"}
                 or not (tag.get("position") or tag.get("name"))
             ):
                 raise FormationError(
@@ -440,7 +442,7 @@ def build_formation(
         mark = {
             "id": f"{id_prefix}-tag-{index}",
             "event_id": event_id,
-            "kind": "nametag",
+            "kind": "player_marker" if tag.get("style") == "marker" else "nametag",
             "start_seconds": start,
             "end_seconds": end,
             "points": keyframes[0]["points"],

@@ -230,7 +230,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _parse_tags(values):
-    """Turn repeated `POSITION[:NAME]` options into formation tag dicts."""
+    """Turn repeated `POSITION[:NAME[:STYLE]]` options (STYLE is pill or marker) into formation tag dicts."""
     if not values:
         return None
     tags = []
@@ -238,12 +238,15 @@ def _parse_tags(values):
         if value == "-":
             tags.append(None)
             continue
-        position, _, name = value.partition(":")
+        position, _, rest = value.partition(":")
+        name, _, style = rest.partition(":")
         tag = {}
         if position:
             tag["position"] = position
         if name:
             tag["name"] = name
+        if style:
+            tag["style"] = style
         tags.append(tag)
     return tags
 
