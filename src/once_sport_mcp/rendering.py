@@ -707,6 +707,7 @@ GROUND_KINDS = frozenset(
         "spotlight",
         "lob",
         "trail",
+        "player_marker",
     }
 )
 # Whole-mark opacity (a constant alpha on the painted mark) for strokes.
@@ -1134,10 +1135,16 @@ def _paint_frame(path, event, drawings, time, overlay_cache):
     _paint(
         path, event, grounded, time, overlay_cache["ground"], footer=False, ground=True
     )
+    # Layered player markers keep their text tag on top of the players.
+    tags = [
+        {**m, "ground": False, "tag_only": True}
+        for m in grounded
+        if m["kind"] == "player_marker"
+    ]
     _paint(
         path,
         event,
-        [m for m in drawings if not m.get("ground")],
+        [m for m in drawings if not m.get("ground")] + tags,
         time,
         overlay_cache["rest"],
     )
@@ -1376,36 +1383,43 @@ def _paint(
                 size = float(mark.get("size", 1.0))
                 rx = 0.0155 * width * scale * size
                 ry = rx * 0.34
+                tag_only = bool(mark.get("tag_only"))
                 column_h = 0.105 * height * scale * size
-                column = Image.new("RGBA", target_layer.size)
-                column_pen = ImageDraw.Draw(column)
-                steps = 24
-                for index in range(steps):
-                    column_pen.rectangle(
+                if not tag_only:
+                    column = Image.new("RGBA", target_layer.size)
+                    column_pen = ImageDraw.Draw(column)
+                    steps = 24
+                    for index in range(steps):
+                        column_pen.rectangle(
+                            (
+                                ax - rx * 0.82,
+                                ay - column_h * (index + 1) / steps,
+                                ax + rx * 0.82,
+                                ay - column_h * index / steps,
+                            ),
+                            fill=(
+                                255,
+                                255,
+                                255,
+                                round(95 * (1 - index / steps) ** 1.2),
+                            ),
+                        )
+                    target_layer = Image.alpha_composite(target_layer, column)
+                    target_pen = ImageDraw.Draw(target_layer)
+                    target_pen.ellipse(
                         (
-                            ax - rx * 0.82,
-                            ay - column_h * (index + 1) / steps,
-                            ax + rx * 0.82,
-                            ay - column_h * index / steps,
+                            ax - rx - scale,
+                            ay - ry - scale,
+                            ax + rx + scale,
+                            ay + ry + scale,
                         ),
-                        fill=(255, 255, 255, round(95 * (1 - index / steps) ** 1.2)),
+                        fill=halo,
                     )
-                target_layer = Image.alpha_composite(target_layer, column)
-                target_pen = ImageDraw.Draw(target_layer)
-                target_pen.ellipse(
-                    (
-                        ax - rx - scale,
-                        ay - ry - scale,
-                        ax + rx + scale,
-                        ay + ry + scale,
-                    ),
-                    fill=halo,
-                )
-                target_pen.ellipse((ax - rx, ay - ry, ax + rx, ay + ry), fill=color)
+                    target_pen.ellipse((ax - rx, ay - ry, ax + rx, ay + ry), fill=color)
                 tag = " | ".join(
                     part for part in (mark.get("position"), mark.get("text")) if part
                 )
-                if tag:
+                if tag and not ground:
                     tag_fill = mark.get("tag_color", "#FFFFFF")
                     tag_font = _font(max(10, round(height / 60)) * scale, bold=True)
                     box = target_pen.textbbox((0, 0), tag, font=tag_font)

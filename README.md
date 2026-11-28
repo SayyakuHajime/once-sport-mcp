@@ -51,7 +51,7 @@ Turns a host agent's analysis of a football video into reviewed, reproducible ou
 ## Status
 <a id="section-status"></a>
 
-**Pre-release (`0.1.0a10`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
+**Pre-release (`0.1.0a11`).** Interfaces may change. Tested on Linux with Python 3.13 and FFmpeg only.
 
 - Native Once export rejects holds, speed segments, text, flags and the newer drawing kinds; use the custom renderer for them.
 - Tracking is seeded by the host, one target per job. There is no re-identification, occlusion recovery or automatic player detection.
@@ -144,7 +144,7 @@ Drawing kinds (custom renderer): `ellipse`, `arrow`, `line`, `polygon`, `label`,
 - **Pitch templates:** `build_pitch_drawings` (CLI `pitch`) projects a circle, rectangle, half-spaces, five channels, zone 14, a zone grid, a cover shadow or an offside line through a 4-point pitch calibration (metres on a 105x68 pitch to normalized frame points), so shapes follow the pitch perspective. The calibration is fixed: use it for a static camera or a short shot. Pitch templates are projected with a fixed calibration, so combine them with `stabilize` for a moving camera.
 
   ![Pitch templates through a perspective calibration](assets/pitch-templates.png)
-- **Analyst-style telestration:** `player_marker` (a filled ellipse at the feet, a faint light column over the player and a `POSITION | NAME` tag below, with optional `tag_color` and `size`), `lob` (a lofted pass: a tapered arc plus a dark ground shadow, `arc` sets the height), `dash: "dotted"` for movement and marking arrows, `taper: true` for arrows and curves, and `board`, a top-down tactical board inset with numbered tokens, names, position codes and link lines (`players` in metres on a 105x68 pitch, `links` as player indexes, the panel is the rectangle between the two points). Arrows, curves, lobs and trails take `ground: true` to be painted under the players (only on grass and lines) and `opacity` (0.1-1) to be painted see-through; use `ground` first, `opacity` where the mask is unreliable. `start_gap` and `end_gap` (fractions of the frame height, 0-0.1) on `line`, `arrow`, `polyline`, `curve` and `lob` stop the path short of the player at either end, so an arrow starts and ends next to the players instead of on top of them. `build_formation_drawings` tags accept `"style": "marker"` (CLI `--tag POSITION:NAME:marker`). Position codes include `RWF`, `LWF`, `CMF`, `DMF`. Custom renderer only.
+- **Analyst-style telestration:** `player_marker` (a filled ellipse at the feet, a faint light column over the player and a `POSITION | NAME` tag below, with optional `tag_color` and `size`), `lob` (a lofted pass: a tapered arc plus a dark ground shadow, `arc` sets the height), `dash: "dotted"` for movement and marking arrows, `taper: true` for arrows and curves, and `board`, a top-down tactical board inset with numbered tokens, names, position codes and link lines (`players` in metres on a 105x68 pitch, `links` as player indexes, the panel is the rectangle between the two points). Arrows, curves, lobs, trails and player markers take `ground: true` to be painted under the players (only on grass and lines) and `opacity` (0.1-1) to be painted see-through; use `ground` first, `opacity` where the mask is unreliable. `start_gap` and `end_gap` (fractions of the frame height, 0-0.1) on `line`, `arrow`, `polyline`, `curve` and `lob` stop the path short of the player at either end, so an arrow starts and ends next to the players instead of on top of them. `build_formation_drawings` tags accept `"style": "marker"` (CLI `--tag POSITION:NAME:marker`). Position codes include `RWF`, `LWF`, `CMF`, `DMF`. Custom renderer only.
 
   ![Player markers, a lofted pass, dotted and tapered arrows and a tactical board](assets/telestration-styles.png)
 
@@ -182,11 +182,11 @@ Each frame carries a caption with time, team, phase and action. If a tracked pla
 
 ### On real match footage
 
-The same drawing kinds on stills from a real broadcast: Mexico v England, FIFA World Cup 2026 round of 16, 1080p. Markers and arrows are anchored at the players' feet; with `ground: true` they are painted under the players, and the dotted arrow keeps its head visible. Player tags are neutral (`ENG A`, `MEX A`); they do not claim identities.
+The same drawing kinds on stills from a real broadcast: Mexico v England, FIFA World Cup 2026 round of 16, 1080p. Markers and arrows are anchored at the players' feet. In the second still the ground ovals use `ground: true`, so the players stand in front of them while the text tags stay on top; the dotted arrow keeps its head visible. Player tags are neutral (`ENG A`, `MEX A`); they do not claim identities.
 
-| Midfield: lob, tapered run, space between the lines | Block shape, markers and a dotted pass |
+| Midfield: lob, tapered run, space between the lines | Layered player markers and a dotted pass |
 |---|---|
-| ![Mexico v England: player markers, a lofted pass, a tapered run and a shaded space between the lines](assets/real-match-midfield.png) | ![Mexico v England: England's block as a shaded area, three player markers and a dotted arrow](assets/real-match-block.png) |
+| ![Mexico v England: player markers, a lofted pass, a tapered run and a shaded space between the lines](assets/real-match-midfield.png) | ![Mexico v England: three layered ground markers with tags and a dotted arrow](assets/real-match-block.png) |
 
 These two stills are broadcast frames from a FIFA World Cup 2026 highlight, shown only to illustrate the drawing output; the footage belongs to its rights holders. The tool never ships footage; use your own clip.
 

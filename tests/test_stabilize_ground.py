@@ -137,3 +137,37 @@ def test_ground_drawing_does_not_tint_players(tmp_path):
     assert (np.abs(player - 240).sum(axis=2) < 12).mean() > 0.9  # untouched
     tinted = out[100:140, 100:200]
     assert (tinted[:, :, 0] - frame[100:140, 100:200, 0].astype(int)).mean() > 20
+
+
+def test_layered_player_marker_keeps_the_player_on_top_and_the_tag_above(tmp_path):
+    np = pytest.importorskip("numpy")
+    from PIL import Image
+
+    frame = np.zeros((360, 640, 3), np.uint8)
+    for column in range(0, 640, 60):
+        frame[:, column : column + 60] = (
+            (52, 128, 48) if (column // 60) % 2 else (46, 118, 42)
+        )
+    frame[150:210, 300:318] = (240, 240, 240)  # a white-kit player, feet at y=210
+    path = tmp_path / "f.png"
+    Image.fromarray(frame).save(path)
+    marker = mark(
+        "player_marker",
+        points=[[309 / 640, 208 / 360]],
+        text="ENG",
+        color="#E5484D",
+        tag_color="#FFD166",
+        size=2.0,
+        ground=True,
+    )
+    cache = {"rest": [None, None], "ground": [None, None]}
+    rendering._paint_frame(path, EVENT, [marker], 0.5, cache)
+    out = np.asarray(Image.open(path).convert("RGB")).astype(int)
+    body = out[160:200, 304:314]
+    assert (np.abs(body - 240).sum(axis=2) < 12).mean() > 0.9  # column/ring not on him
+    ring = out[200:216, 260:360]
+    assert ((ring[:, :, 0] > 200) & (ring[:, :, 1] < 120)).sum() > 40  # ring on grass
+    tag = out[212:240, 270:350]
+    assert (
+        (tag[:, :, 0] > 230) & (tag[:, :, 1] > 190) & (tag[:, :, 2] < 140)
+    ).sum() > 40
